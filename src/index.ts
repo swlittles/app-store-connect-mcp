@@ -16,6 +16,10 @@ Environment:
   ASC_WRITE=1         Allow changes. Without it the server is read-only.
   ASC_APP_ID          Default app (ID, bundle ID or name)
   ASC_VENDOR_NUMBER   Vendor number for sales and finance reports
+  ASC_TOOLS           Only these tools or groups (default: all), e.g. "read,testflight"
+  ASC_DISABLED_TOOLS  Turn off these tools or groups, e.g. "destructive,raw"
+                      Groups: all, read, destructive, testflight, listing, screenshots,
+                      release, subscriptions, reviews, raw
 
 Flags:
   --check             Verify the credentials by listing the apps the key can see, then exit
@@ -30,6 +34,9 @@ Flags:
   try {
     const { data } = await asc.getAll<{ name?: string; bundleId?: string }>("/v1/apps", { "fields[apps]": "name,bundleId" }, { max: 50 });
     console.log(`OK: key ${config.keyId} can see ${data.length} app(s). Writes ${config.write ? "enabled" : "disabled (read-only)"}.`);
+    const enabled = runtime.tools?.length ?? 0;
+    const off = runtime.disabledTools ?? [];
+    console.log(`Tools: ${enabled} enabled${off.length ? `; turned off: ${off.join(", ")}` : " (all)"}.`);
     for (const app of data) console.log(`  ${app.attributes?.name} (${app.attributes?.bundleId}) id ${app.id}`);
     if (asc.rateLimit.remaining !== undefined) console.log(`Rate limit: ${asc.rateLimit.remaining} of ${asc.rateLimit.limit} requests left this hour.`);
   } catch (error) {

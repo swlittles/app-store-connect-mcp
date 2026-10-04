@@ -4,12 +4,22 @@ import { TokenProvider } from "./asc/auth.js";
 import { AscClient } from "./asc/client.js";
 import { ConfigError, loadConfig, type Config } from "./config.js";
 import { registerTools, type Runtime, type Services } from "./tools/framework.js";
+import type { AnyTool } from "./tools/framework.js";
 import { TOOLS } from "./tools/index.js";
+import { selectTools } from "./tools/select.js";
+
+export type ServerRuntime = Runtime & {
+  config?: Config;
+  configError?: ConfigError;
+  /** The tools to expose, after ASC_TOOLS and ASC_DISABLED_TOOLS. Defaults to every tool. */
+  tools?: readonly AnyTool[];
+  disabledTools?: readonly string[];
+};
 
 export const VERSION: string = (createRequire(import.meta.url)("../package.json") as { version: string }).version;
 
 /** Builds the runtime from environment variables. A bad config doesn't stop the server; tools report it. */
-export function runtimeFromEnv(env: NodeJS.ProcessEnv = process.env): Runtime & { config?: Config; configError?: ConfigError } {
+export function runtimeFromEnv(env: NodeJS.ProcessEnv = process.env): ServerRuntime {
   let services: Services | undefined;
   let configError: ConfigError | undefined;
   let config: Config | undefined;
@@ -21,9 +31,17 @@ export function runtimeFromEnv(env: NodeJS.ProcessEnv = process.env): Runtime & 
     if (!(error instanceof ConfigError)) throw error;
     configError = error;
   }
+  const selection = selectTools(env, TOOLS);
+  if (selection.error) {
+    // An invalid tool selection fails closed: every tool refuses until it's fixed.
+    configError = selection.error;
+    services = undefined;
+  }
   return {
     config,
     configError,
+    tools: selection.tools,
+    disabledTools: selection.disabled,
     services() {
       if (!services) throw configError!;
       return services;
@@ -33,7 +51,9 @@ export function runtimeFromEnv(env: NodeJS.ProcessEnv = process.env): Runtime & 
   };
 }
 
-export function createServer(runtime: Runtime & { config?: Config; configError?: ConfigError }): McpServer {
+export function createServer(runtime: ServerRuntime): McpServer {
+  const tools = runtime.tools ?? TOOLS;
+  const disabled = runtime.disabledTools ?? [];
   const mode = runtime.configError
     ? `NOT CONFIGURED: ${runtime.configError.message}`
     : runtime.config?.write
@@ -45,6 +65,7 @@ export function createServer(runtime: Runtime & { config?: Config; configError?:
       instructions: [
         "Manage apps in Apple's App Store Connect: TestFlight builds and testers, store listing, screenshots, subscriptions, App Review submission, customer reviews and reports.",
         mode,
+        ...(disabled.length ? [`The user turned off these tools (ASC_TOOLS / ASC_DISABLED_TOOLS): ${disabled.join(", ")}. Don't work around them with asc_request.`] : []),
         "Start with list_apps or get_app_status. Tools take an app ID, bundle ID or name; ASC_APP_ID sets a default.",
         "Prefer the workflow tools (distribute_build, replace_screenshot, upload_screenshots, update_listing, submit_for_review…) over asc_request: they check state first and are safe to re-run.",
         "Destructive tools (deleting screenshots, offers or testers, submitting for review) default to dry_run: true. Show the user the plan, then call again with dry_run: false.",
@@ -52,6 +73,6 @@ export function createServer(runtime: Runtime & { config?: Config; configError?:
       ].join("\n"),
     },
   );
-  registerTools(server, TOOLS, runtime);
+  registerTools(server, tools, runtime);
   return server;
 }

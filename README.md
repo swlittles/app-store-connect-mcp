@@ -101,10 +101,47 @@ Then ask for things in plain language:
 | `ASC_WRITE` | `1` allows changes. Without it the server is read-only, and write tools only return plans. |
 | `ASC_APP_ID` | Default app, as an app ID, bundle ID or exact name. If it's unset and the key can see only one app, that app is used. |
 | `ASC_VENDOR_NUMBER` | Vendor number for `download_report` (shown in Payments and Financial Reports). |
+| `ASC_TOOLS` | Only offer these tools or groups. Default: all. See [Turning tools off](#turning-tools-off). |
+| `ASC_DISABLED_TOOLS` | Never offer these tools or groups. |
 
 The key is only used to sign tokens. The server never logs it or puts it in tool output or error messages, and it only sends tokens to `api.appstoreconnect.apple.com`. That host is fixed and can't be overridden.
 
 If the configuration is incomplete, the server still starts, and every tool returns an error explaining what's missing. Your client won't just show "failed to connect".
+
+## Turning tools off
+
+There's no settings screen: the server runs in the background of your agent app. Choose its tools with two environment variables, set in the same place as the key:
+
+- `ASC_TOOLS` is an allowlist. Only the tools listed are offered. Without it, every tool is offered.
+- `ASC_DISABLED_TOOLS` is a denylist. It's applied after `ASC_TOOLS`.
+
+Both take tool names and group names, separated by commas or spaces. Turned-off tools aren't shown to the agent at all, so it can't call them.
+
+| Group | Tools |
+| --- | --- |
+| `read` | Every read-only tool: `list_apps`, `get_app_status`, `list_builds`, `get_build`, `list_beta_groups`, `list_testers`, `get_listing`, `list_screenshots`, `list_subscriptions`, `get_reviews`, `download_report` |
+| `testflight` | `upload_build`, `distribute_build`, `create_beta_group`, `invite_testers`, `remove_testers` |
+| `listing` | `update_listing`, `set_whats_new`, `update_age_rating` |
+| `screenshots` | `upload_screenshots`, `replace_screenshot`, `reorder_screenshots`, `delete_screenshots` |
+| `release` | `prepare_version`, `set_review_details`, `submit_for_review`, `cancel_review_submission` |
+| `subscriptions` | `remove_intro_offers`, `add_free_trial` |
+| `reviews` | `reply_to_review` |
+| `raw` | `asc_request` |
+| `destructive` | Everything that deletes or can't be taken back: `remove_testers`, `upload_screenshots`, `replace_screenshot`, `delete_screenshots`, `submit_for_review`, `cancel_review_submission`, `remove_intro_offers`, `reply_to_review`, `asc_request` |
+| `all` | Everything |
+
+Examples:
+
+```sh
+-e ASC_TOOLS=read                                 # look, never touch
+-e ASC_TOOLS=read,testflight                      # TestFlight only, plus reading
+-e ASC_DISABLED_TOOLS=destructive                 # everything except deleting and submitting
+-e ASC_DISABLED_TOOLS=submit_for_review,raw       # no App Review submissions, no raw API calls
+```
+
+If an entry isn't a known tool or group, every tool refuses to run until it's fixed. That way a typo in `ASC_DISABLED_TOOLS` can't leave a tool switched on. `--check` prints which tools are on.
+
+`ASC_WRITE` still applies on top: without it, even enabled write tools only return dry-run plans. Your agent app may also let you block tools; for example, Claude Code's `permissions.deny` takes names like `mcp__asc__submit_for_review`.
 
 ## Tools
 

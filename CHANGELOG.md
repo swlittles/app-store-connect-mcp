@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.0
+
+- `ASC_TOOLS` and `ASC_DISABLED_TOOLS` choose which tools the server offers, by tool name or by group (`read`, `testflight`, `listing`, `screenshots`, `release`, `subscriptions`, `reviews`, `raw`, `destructive`, `all`). An unknown entry makes every tool refuse to run, so a typo can't leave one switched on.
+- `--check` reports which tools are on.
+
 ## 0.1.0
 
 First release. Install it from GitHub; it isn't published to npm.
