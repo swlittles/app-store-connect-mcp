@@ -19,7 +19,7 @@ Apple doesn't ship an MCP server for App Store Connect. Xcode's `xcrun mcpbridge
 ```sh
 git clone https://github.com/swlittles/app-store-connect-mcp.git ~/app-store-connect-mcp
 cd ~/app-store-connect-mcp
-npm install            # installs dependencies and builds dist/index.js
+npm ci                 # installs the exact locked dependencies and builds dist/index.js
 ```
 
 You can clone it anywhere. The examples below assume `~/app-store-connect-mcp`.
@@ -74,7 +74,7 @@ args = ["/Users/you/app-store-connect-mcp/dist/index.js"]
 env = { ASC_KEY_ID = "YOUR_KEY_ID", ASC_ISSUER_ID = "YOUR_ISSUER_ID", ASC_KEY_PATH = "/Users/you/.appstoreconnect/AuthKey_YOUR_KEY_ID.p8" }
 ```
 
-**Updating:** run `cd ~/app-store-connect-mcp && git pull && npm install`, then restart your agent. To stay on a release, check out its tag, for example `git checkout v0.1.0`.
+**Updating:** run `cd ~/app-store-connect-mcp && git pull && npm ci`, then restart your agent. To stay on a release, check out its tag, for example `git fetch --tags && git checkout v0.2.0 && npm ci`. Use `npm ci` rather than `npm install`: it never rewrites `package-lock.json`, so `git pull` always applies cleanly.
 
 **Trying it without cloning:** `npx -y github:swlittles/app-store-connect-mcp --check` (with the same environment variables) downloads and builds it in npm's cache. That's fine for a quick try. For everyday use, clone it: npx rebuilds on first launch, which can be slower than an agent waits for a server to start.
 

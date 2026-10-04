@@ -23,6 +23,8 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
+      - name: package-lock.json is in sync with package.json
+        run: npm install --package-lock-only --ignore-scripts && git diff --exit-code package-lock.json
       - run: npm run check:public
       - run: npm run typecheck
       - run: npm test
