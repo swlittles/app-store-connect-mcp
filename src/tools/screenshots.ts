@@ -154,7 +154,7 @@ export type Desired = { existing: string } | { file: LocalFile };
  * no longer wanted. Each step re-reads state, and new files are matched to screenshots already
  * in the set by MD5, so re-running after a failure or timeout continues instead of duplicating.
  */
-export async function syncSet(ctx: ToolContext, target: SetTarget, desired: Desired[], log: StepLog, waitMinutes: number): Promise<string[]> {
+export async function syncSet(ctx: ToolContext, target: SetTarget, desired: Desired[], log: StepLog, waitMinutes: number): Promise<{ finished: boolean }> {
   if (desired.length > MAX_SCREENSHOTS) throw new UserError(`A set holds at most ${MAX_SCREENSHOTS} screenshots; this would leave ${desired.length}.`);
   const current = target.screenshots;
   const byId = new Map(current.map((s) => [s.id, s]));
@@ -174,7 +174,7 @@ export async function syncSet(ctx: ToolContext, target: SetTarget, desired: Desi
   for (const slot of slots) {
     if (!slot.file) continue;
     // An earlier run may already have uploaded this exact file.
-    const match = current.find((s) => !claimed.has(s.id) && s.attributes?.sourceFileChecksum === slot.file!.md5 && ["COMPLETE", "UPLOAD_COMPLETE"].includes(shotState(s)));
+    const match = current.find((s) => !claimed.has(s.id) && s.attributes?.sourceFileChecksum === slot.file!.md5 && !isBroken(s));
     if (match) {
       claimed.add(match.id);
       slot.id = match.id;
@@ -186,8 +186,7 @@ export async function syncSet(ctx: ToolContext, target: SetTarget, desired: Desi
 
   // A set can't exceed 10, even briefly, so some deletes may have to come first.
   const overflow = current.length + toUpload.length - MAX_SCREENSHOTS;
-  const broken = (s: Screenshot) => ["FAILED", "AWAITING_UPLOAD"].includes(shotState(s));
-  const early = overflow > 0 ? [...toDelete].sort((a, b) => Number(broken(b)) - Number(broken(a))).slice(0, overflow) : [];
+  const early = overflow > 0 ? [...toDelete].sort((a, b) => Number(isBroken(b)) - Number(isBroken(a))).slice(0, overflow) : [];
   const positionOf = (s: Screenshot) => current.indexOf(s) + 1;
 
   if (early.length) {
@@ -201,7 +200,7 @@ export async function syncSet(ctx: ToolContext, target: SetTarget, desired: Desi
     if (slots.length) log.plan(`Order: ${slots.map((s, i) => `${i + 1}. ${s.file?.fileName ?? byId.get(s.id!)?.attributes?.fileName ?? s.id}`).join(", ")}`);
     for (const s of toDelete.filter((d) => !early.includes(d))) log.plan(`Delete #${positionOf(s)} ${s.attributes?.fileName ?? s.id} (after the new order is in place)`);
     if (!toUpload.length && !toDelete.length && sameOrder(current.map((s) => s.id), slots.map((s) => s.id!))) log.skip("Set already matches; nothing to do");
-    return [];
+    return { finished: false };
   }
 
   const state: SyncState = { pendingDeletes: [] };
@@ -232,7 +231,7 @@ async function applySync(
   log: StepLog,
   waitMinutes: number,
   state: SyncState,
-): Promise<string[]> {
+): Promise<{ finished: boolean }> {
   const toUpload = slots.filter((s) => !s.id);
   const positionOf = (s: Screenshot) => target.screenshots.indexOf(s) + 1;
 
@@ -280,9 +279,11 @@ async function applySync(
     log.done(`Uploaded ${file.fileName} (${id})`);
   }
 
-  // 4. Wait until Apple has processed every screenshot we're keeping.
+  // 4. Wait until Apple has processed the new images: this run's uploads, and earlier uploads
+  // still in UPLOAD_COMPLETE. (Broken leftovers in AWAITING_UPLOAD or FAILED never finish, so
+  // they're never waited on.)
   const finalIds = slots.map((s) => s.id!);
-  const pendingIds = new Set(finalIds.filter((id) => !byId.has(id) || shotState(byId.get(id)!) !== "COMPLETE"));
+  const pendingIds = new Set(finalIds.filter((id) => !byId.has(id) || shotState(byId.get(id)!) === "UPLOAD_COMPLETE"));
   if (pendingIds.size) {
     const { value, done } = await poll(
       async () => Promise.all([...pendingIds].map((id) => ctx.asc.get<Screenshot>(`/v1/appScreenshots/${id}`).then((d) => d.data))),
@@ -295,12 +296,16 @@ async function applySync(
         const why = (s.attributes?.assetDeliveryState?.errors ?? []).map((e) => `${e.code}: ${e.description}`).join("; ");
         log.fail(`Apple couldn't process ${s.attributes?.fileName} (${s.id}): ${why || "no detail"}`);
       }
-      log.info("Stopped before reordering or deleting anything, so the live listing is unchanged. Fix the image (usually its size), then run the same call again.");
-      return finalIds;
+      log.info(
+        early.length
+          ? "Stopped before reordering or deleting anything else. Fix the image (usually its size), then run the same call again."
+          : "Stopped before reordering or deleting anything, so the live listing is unchanged. Fix the image (usually its size), then run the same call again.",
+      );
+      return { finished: false };
     }
     if (!done) {
       log.warn(`Apple is still processing ${plural(value.filter((s) => shotState(s) !== "COMPLETE").length, "image")}. Run the same call again to finish (uploads won't repeat).`);
-      return finalIds;
+      return { finished: false };
     }
     log.done(`Apple finished processing ${plural(pendingIds.size, "image")}`);
   }
@@ -332,16 +337,21 @@ async function applySync(
   }
   log.info(`Set ${setId} now:`);
   final.forEach((s, i) => log.info(`  ${describeShot(s, i + 1)}`));
-  return finalIds;
+  return { finished: true };
+}
+
+function isBroken(s: Screenshot): boolean {
+  return ["FAILED", "AWAITING_UPLOAD"].includes(shotState(s));
 }
 
 /**
- * The current screenshots minus any that are copies of `files`: those come from an earlier,
- * interrupted run of the same call and are matched to the files by checksum instead.
+ * The current screenshots worth keeping alongside `files`. Copies of the files come from an
+ * earlier, interrupted run and are matched to the files by checksum instead. Broken leftovers
+ * (an upload that never finished, or one Apple rejected) are dropped, so the plan deletes them.
  */
 function keptExcept(current: Screenshot[], files: LocalFile[]): Screenshot[] {
   const checksums = new Set(files.map((f) => f.md5));
-  return current.filter((s) => !s.attributes?.sourceFileChecksum || !checksums.has(s.attributes.sourceFileChecksum));
+  return current.filter((s) => !isBroken(s) && !(s.attributes?.sourceFileChecksum && checksums.has(s.attributes.sourceFileChecksum)));
 }
 
 function sameOrder(a: readonly string[], b: readonly string[]): boolean {
@@ -422,35 +432,71 @@ export const replaceScreenshot = defineTool({
   name: "replace_screenshot",
   title: "Replace one screenshot",
   description:
-    "Replaces the screenshot at one position (1-based) with a new image, keeping its place. The new image is uploaded and processed before the old one is removed, so the listing never has a gap.",
+    "Replaces one screenshot with a new image, keeping its place. Identify it by position (1-based, from list_screenshots) or by screenshot_id. " +
+    "The new image is uploaded and processed before the old one is removed, so the listing never has a gap (except in a full set of 10, where the old one has to go first). " +
+    "If a run stops partway, it says how to continue: call again with screenshot_id so the right screenshot is replaced even if positions shifted.",
   kind: "destructive",
   input: {
     ...targetInputs,
-    position: z.number().int().min(1).max(MAX_SCREENSHOTS).describe("Position to replace, 1-based, as shown by list_screenshots."),
+    position: z.number().int().min(1).max(MAX_SCREENSHOTS).optional().describe("Position to replace, 1-based, as shown by list_screenshots."),
+    screenshot_id: z.string().optional().describe("ID of the screenshot to replace. Safer than position when continuing an interrupted run."),
     file: z.string().describe("Absolute path of the new image."),
     wait_minutes: waitInput,
   },
   async run(args, ctx) {
+    if (args.position === undefined && !args.screenshot_id) throw new UserError("Pass position or screenshot_id.");
     const log = new StepLog();
     const [file] = await loadFiles([args.file], args.display_type, log);
     const target = await loadSetTarget(ctx, args);
     const current = target.screenshots;
-    const old = current[args.position - 1];
-    if (!old) {
-      // A re-run after the old one was already deleted lands here only if the set shrank; say so plainly.
-      if (current.some((s) => s.attributes?.sourceFileChecksum === file!.md5)) {
-        return [header(target), `${file!.fileName} is already in the set and there's no screenshot at position ${args.position}; nothing to do. Check with list_screenshots.`].join("\n");
+    const copy = current.find((s) => s.attributes?.sourceFileChecksum === file!.md5 && !isBroken(s));
+    const done = (lines: string[]) => [header(target), STEP_LEGEND, log.toString(), ...lines].join("\n");
+
+    let old: Screenshot | undefined;
+    if (args.screenshot_id) {
+      old = current.find((s) => s.id === args.screenshot_id);
+      if (!old) {
+        if (!copy) throw new UserError(`Screenshot ${args.screenshot_id} isn't in this set (it has ${current.length}). Check with list_screenshots.`);
+        // An earlier, interrupted run already removed the old one (a full set deletes first).
+        // All that may be left is putting the new image in place.
+        log.skip(`${args.screenshot_id} is already gone and ${file!.fileName} is uploaded (${copy.id})`);
+        const rest = keptExcept(current, [file!]).map((s) => s.id);
+        const at = args.position ? Math.min(args.position - 1, rest.length) : current.indexOf(copy);
+        rest.splice(at, 0, copy.id);
+        const { finished } = await syncSet(ctx, target, rest.map((existing) => ({ existing })), log, args.wait_minutes);
+        return done(finished || ctx.dryRun ? [] : [`To continue, call replace_screenshot again with the same arguments.`]);
       }
-      throw new UserError(`There's no screenshot at position ${args.position}; the set has ${current.length}. Use upload_screenshots with mode "append" to add one.`);
+    } else {
+      old = current[args.position! - 1];
+      if (!old) throw new UserError(`There's no screenshot at position ${args.position}; the set has ${current.length}. Use upload_screenshots with mode "append" to add one.`);
     }
+
     if (old.attributes?.sourceFileChecksum === file!.md5) {
-      log.skip(`Position ${args.position} already has this image (${old.id})`);
-      return [header(target), STEP_LEGEND, log.toString()].join("\n");
+      log.skip(`#${current.indexOf(old) + 1} already has this image (${old.id})`);
+      return done([]);
     }
-    log.info(`Replacing #${args.position} ${old.attributes?.fileName ?? old.id} with ${file!.fileName}`);
+    if (copy && !args.screenshot_id) {
+      // The image is already in the set, probably from an interrupted run. Positions may have
+      // shifted since, so don't guess which screenshot it was meant to replace.
+      throw new UserError(
+        `${file!.fileName} is already in this set at #${current.indexOf(copy) + 1} (id ${copy.id}), probably from an earlier run that stopped partway. ` +
+          `To finish replacing a screenshot with it, call replace_screenshot with screenshot_id set to the screenshot it replaces ` +
+          `(#${args.position} is now ${old.attributes?.fileName ?? "?"}, id ${old.id}; check list_screenshots). To just move it, use reorder_screenshots.`,
+      );
+    }
+
+    log.info(`Replacing #${current.indexOf(old) + 1} ${old.attributes?.fileName ?? old.id} (id ${old.id}) with ${file!.fileName}`);
+    const position = current.indexOf(old) + 1;
+    const resume = `To continue, call replace_screenshot again with screenshot_id: "${old.id}", position: ${position} and the same file.`;
     const desired: Desired[] = keptExcept(current, [file!]).map((s) => (s.id === old.id ? { file: file! } : { existing: s.id }));
-    await syncSet(ctx, target, desired, log, args.wait_minutes);
-    return [header(target), STEP_LEGEND, log.toString()].join("\n");
+    if (!desired.some((d) => "file" in d)) desired.splice(position - 1, 0, { file: file! });
+    try {
+      const { finished } = await syncSet(ctx, target, desired, log, args.wait_minutes);
+      return done(finished || ctx.dryRun ? [] : [resume]);
+    } catch (error) {
+      if (error instanceof UserError && error.message.startsWith(STEP_LEGEND)) throw new UserError(`${error.message}\n${resume}`);
+      throw error;
+    }
   },
 });
 

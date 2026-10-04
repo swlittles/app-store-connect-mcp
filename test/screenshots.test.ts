@@ -123,12 +123,18 @@ describe("replace_screenshot", () => {
     const [file] = tempImages(["new-1.png"]);
     const first = await h.call("replace_screenshot", { ...base, position: 1, file, dry_run: false, wait_minutes: 1 });
     expect(first.text).toContain("still processing");
+    expect(first.text).toContain('call replace_screenshot again with screenshot_id: "shot-1"');
     expect(h.fake.get("appScreenshots", "shot-1")).toBeDefined();
+
+    // Repeating the position alone is refused: positions may have shifted.
+    const ambiguous = await h.call("replace_screenshot", { ...base, position: 1, file, dry_run: false });
+    expect(ambiguous.isError).toBe(true);
+    expect(ambiguous.text).toContain("already in this set at #4");
 
     // Apple finishes; the same call continues without uploading again.
     for (const s of h.fake.all("appScreenshots")) if ((s.attributes.assetDeliveryState as { state: string }).state === "UPLOAD_COMPLETE") s.attributes.assetDeliveryState = { state: "COMPLETE" };
     const posts = h.fake.requests.filter((r) => r.method === "POST").length;
-    const second = await h.call("replace_screenshot", { ...base, position: 1, file, dry_run: false });
+    const second = await h.call("replace_screenshot", { ...base, screenshot_id: "shot-1", position: 1, file, dry_run: false });
     expect(second.isError, second.text).toBe(false);
     expect(h.fake.requests.filter((r) => r.method === "POST").length).toBe(posts);
     expect(fileNames(h.fake)).toEqual(["new-1.png", "old-2.png", "old-3.png"]);
@@ -218,5 +224,36 @@ describe("interrupted appends", () => {
     const second = await h.call("upload_screenshots", { ...base, files, mode: "append", dry_run: false });
     expect(second.isError, second.text).toBe(false);
     expect(fileNames(h.fake)).toEqual(["old-1.png", "old-2.png", "extra.png"]);
+  });
+});
+
+describe("review regressions", () => {
+  it("a full set interrupted mid-replace finishes without deleting a second screenshot", async () => {
+    h = makeHarness();
+    seedApp(h.fake);
+    screenshotBehaviour(h, { slow: true });
+    seedVersion(h.fake, { screenshots: 10 });
+    const [file] = tempImages(["new-3.png"]);
+    const first = await h.call("replace_screenshot", { ...base, position: 3, file, dry_run: false, wait_minutes: 1 });
+    expect(first.text).toContain('screenshot_id: "shot-3"');
+    expect(h.fake.get("appScreenshots", "shot-3")).toBeUndefined(); // full set: deleted first
+
+    for (const s of h.fake.all("appScreenshots")) s.attributes.assetDeliveryState = { state: "COMPLETE" };
+    const second = await h.call("replace_screenshot", { ...base, screenshot_id: "shot-3", position: 3, file, dry_run: false });
+    expect(second.isError, second.text).toBe(false);
+    expect(fileNames(h.fake)).toEqual(["old-1.png", "old-2.png", "new-3.png", "old-4.png", "old-5.png", "old-6.png", "old-7.png", "old-8.png", "old-9.png", "old-10.png"]);
+  });
+
+  it("an upload that never finished doesn't block the set, and replace cleans it up", async () => {
+    seedVersion(h.fake, { screenshots: 2 });
+    h.fake.add("appScreenshots", "stuck", { fileName: "stuck.png", fileSize: 10, assetDeliveryState: { state: "AWAITING_UPLOAD" } }, { appScreenshotSet: SET_ID });
+    const reorder = await h.call("reorder_screenshots", { ...base, order: [2], dry_run: false });
+    expect(reorder.isError, reorder.text).toBe(false);
+    expect(fileNames(h.fake)).toEqual(["old-2.png", "old-1.png", "stuck.png"]);
+
+    const [file] = tempImages(["fresh.png"]);
+    const replace = await h.call("replace_screenshot", { ...base, position: 1, file, dry_run: false });
+    expect(replace.isError, replace.text).toBe(false);
+    expect(fileNames(h.fake)).toEqual(["fresh.png", "old-1.png"]);
   });
 });

@@ -103,6 +103,18 @@ export const buildInput = z
   .optional()
   .describe('Build number (CFBundleVersion, e.g. "202610010021"), build resource ID, or "latest" (the default).');
 
+export const buildVersionInput = z
+  .string()
+  .optional()
+  .describe('Marketing version (CFBundleShortVersionString, e.g. "1.2"). Needed only if build numbers repeat across versions.');
+
+/** Which build: a number, ID or "latest", optionally narrowed by platform and marketing version. */
+export interface BuildQuery {
+  build?: string;
+  platform?: Platform;
+  version?: string;
+}
+
 const BUILD_INCLUDE = "buildBetaDetail,preReleaseVersion";
 
 function toBuildInfo(build: Resource<BuildAttributes>, included: Included): BuildInfo {
@@ -126,13 +138,8 @@ export async function getBuildById(ctx: ToolContext, id: string): Promise<BuildI
  * Finds a build by number, ID or "latest". Returns undefined if Apple doesn't know the build yet
  * (it may still be in the upload pipeline; see describeMissingBuild).
  */
-export async function findBuild(
-  ctx: ToolContext,
-  appId: string,
-  build: string | undefined,
-  platform?: Platform,
-): Promise<BuildInfo | undefined> {
-  const wanted = build?.trim() || "latest";
+export async function findBuild(ctx: ToolContext, appId: string, q: BuildQuery): Promise<BuildInfo | undefined> {
+  const wanted = q.build?.trim() || "latest";
   if (isResourceId(wanted)) {
     try {
       return await getBuildById(ctx, wanted);
@@ -148,25 +155,29 @@ export async function findBuild(
     limit: 5,
   };
   if (wanted !== "latest") query["filter[version]"] = wanted;
-  if (platform) query["filter[preReleaseVersion.platform]"] = platform;
+  if (q.platform) query["filter[preReleaseVersion.platform]"] = q.platform;
+  if (q.version) query["filter[preReleaseVersion.version]"] = q.version;
   const doc = await ctx.asc.get<Resource<BuildAttributes>[]>("/v1/builds", query);
   const first = doc.data[0];
   return first ? toBuildInfo(first, new Included(doc.included)) : undefined;
 }
 
-export async function requireBuild(ctx: ToolContext, appId: string, build: string | undefined, platform?: Platform): Promise<BuildInfo> {
-  const found = await findBuild(ctx, appId, build, platform);
+export async function requireBuild(ctx: ToolContext, appId: string, q: BuildQuery): Promise<BuildInfo> {
+  const found = await findBuild(ctx, appId, q);
   if (found) return found;
-  throw new UserError(await describeMissingBuild(ctx, appId, build));
+  throw new UserError(await describeMissingBuild(ctx, appId, q));
 }
 
 /** Explains why a build isn't there yet, using the build upload pipeline's state if it can. */
-export async function describeMissingBuild(ctx: ToolContext, appId: string, build: string | undefined): Promise<string> {
+export async function describeMissingBuild(ctx: ToolContext, appId: string, q: BuildQuery): Promise<string> {
+  const build = q.build;
   if (!build || build === "latest") return "This app has no builds yet. Upload one with upload_build (or Xcode/Transporter).";
   if (!isResourceId(build)) {
     try {
       const uploads = await ctx.asc.get<Resource<BuildUploadAttributes>[]>(`/v1/apps/${appId}/buildUploads`, {
         "filter[cfBundleVersion]": build,
+        "filter[cfBundleShortVersionString]": q.version,
+        sort: "-uploadedDate",
         limit: 1,
       });
       const upload = uploads.data[0];
@@ -209,7 +220,7 @@ export const EDITABLE_VERSION_STATES = new Set([
   "METADATA_REJECTED",
   "INVALID_BINARY",
 ]);
-const LIVE_STATES = new Set(["READY_FOR_DISTRIBUTION", "READY_FOR_SALE", "ACCEPTED"]);
+const LIVE_STATES = new Set(["READY_FOR_DISTRIBUTION"]);
 
 export const versionInput = z
   .string()
@@ -220,10 +231,21 @@ export function versionState(v: Resource<AppStoreVersionAttributes>): string {
   return v.attributes?.appVersionState ?? v.attributes?.appStoreState ?? "?";
 }
 
-export async function listVersions(ctx: ToolContext, appId: string, platform: Platform = "IOS") {
+/** Queries versions with server-side filters, so apps with long histories still find the right one. */
+export async function queryVersions(
+  ctx: ToolContext,
+  appId: string,
+  platform: Platform = "IOS",
+  filter: { versionString?: string; states?: readonly string[] } = {},
+) {
   const { data } = await ctx.asc.getAll<AppStoreVersionAttributes>(
     `/v1/apps/${appId}/appStoreVersions`,
-    { "filter[platform]": platform, limit: 50 },
+    {
+      "filter[platform]": platform,
+      "filter[versionString]": filter.versionString,
+      "filter[appVersionState]": filter.states?.join(","),
+      limit: 50,
+    },
     { max: 50 },
   );
   return data.sort((a, b) => (b.attributes?.createdDate ?? "").localeCompare(a.attributes?.createdDate ?? ""));
@@ -234,21 +256,23 @@ export async function resolveVersion(
   appId: string,
   options: { version?: string; platform?: Platform; editable?: boolean },
 ): Promise<Resource<AppStoreVersionAttributes>> {
-  const versions = await listVersions(ctx, appId, options.platform);
+  const platform = options.platform ?? "IOS";
   const wanted = options.version?.trim() || "editable";
-  const describeAll = () =>
-    versions.length ? versions.slice(0, 6).map((v) => `${v.attributes?.versionString} (${versionState(v)})`).join(", ") : "none";
-
-  let found: Resource<AppStoreVersionAttributes> | undefined;
-  if (wanted === "editable") found = versions.find((v) => EDITABLE_VERSION_STATES.has(versionState(v)));
-  else if (wanted === "live") found = versions.find((v) => LIVE_STATES.has(versionState(v)));
-  else found = versions.find((v) => v.attributes?.versionString === wanted);
+  const filter =
+    wanted === "editable"
+      ? { states: [...EDITABLE_VERSION_STATES] }
+      : wanted === "live"
+        ? { states: [...LIVE_STATES] }
+        : { versionString: wanted };
+  const found = (await queryVersions(ctx, appId, platform, filter))[0];
 
   if (!found) {
+    const recent = (await queryVersions(ctx, appId, platform)).slice(0, 6);
+    const describeAll = recent.length ? recent.map((v) => `${v.attributes?.versionString} (${versionState(v)})`).join(", ") : "none";
     if (wanted === "editable") {
-      throw new UserError(`No version is being prepared for ${options.platform ?? "IOS"} (versions: ${describeAll()}). Create one with prepare_version.`);
+      throw new UserError(`No version is being prepared for ${platform} (recent versions: ${describeAll}). Create one with prepare_version.`);
     }
-    throw new UserError(`No ${wanted === "live" ? "live" : `"${wanted}"`} version for ${options.platform ?? "IOS"}. Versions: ${describeAll()}.`);
+    throw new UserError(`No ${wanted === "live" ? "live" : `"${wanted}"`} version for ${platform}. Recent versions: ${describeAll}.`);
   }
   if (options.editable && !EDITABLE_VERSION_STATES.has(versionState(found))) {
     throw new UserError(

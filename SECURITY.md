@@ -8,8 +8,8 @@ Please report security problems privately through [GitHub's security advisories]
 
 - The `.p8` key is read once at startup, from `ASC_KEY_PATH` or `ASC_KEY`. It's used only to sign short-lived (19-minute) ES256 tokens.
 - The key never appears in logs, tool results or error messages. Configuration errors name the variable at fault, never its contents.
-- Tokens are only sent to `https://api.appstoreconnect.apple.com`. Pagination links that point anywhere else are refused. File uploads go to the presigned URLs Apple returns, without the token.
-- `upload_build` with `method: "altool"` passes `ASC_KEY_PATH` to `xcrun altool`. If the key came from `ASC_KEY` instead, it writes a temporary copy readable only by you, and deletes it when the upload finishes.
+- Tokens are only sent to `https://api.appstoreconnect.apple.com`, which is hard-coded. Pagination links that point anywhere else are refused. File uploads go to the presigned URLs Apple returns, without the token.
+- `upload_build` with `method: "altool"` writes a temporary copy of the key, readable only by you, for `xcrun altool`, and deletes it when the upload finishes.
 - The App Review demo password is never echoed back in tool output.
 
 ## Recommendations

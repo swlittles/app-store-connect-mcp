@@ -195,7 +195,11 @@ export const addFreeTrial = defineTool({
       const { data } = await ctx.asc.getAll<unknown>(`/v1/subscriptionAvailabilities/${availability.data.id}/availableTerritories`, { "fields[territories]": "currency" });
       territories = data.map((t) => t.id);
     }
-    const existing = new Set((await listOffers(ctx, sub.id)).map((o) => relId(o, "territory")));
+    const today = new Date(ctx.now()).toISOString().slice(0, 10);
+    // An offer that has ended doesn't block a new one.
+    const existing = new Set(
+      (await listOffers(ctx, sub.id)).filter((o) => !o.attributes?.endDate || o.attributes.endDate >= today).map((o) => relId(o, "territory")),
+    );
     const todo = territories.filter((t) => !existing.has(t));
     const log = new StepLog();
     log.info(`${sub.attributes?.name} (${sub.attributes?.productId}): ${territories.length} territories, ${territories.length - todo.length} already have an introductory offer.`);
@@ -220,7 +224,11 @@ export const addFreeTrial = defineTool({
           });
           return "added";
         } catch (error) {
-          if (error instanceof AscApiError && error.status === 409) return "already had an offer";
+          // 409 also covers validation errors, so only call it "already there" if an offer really is.
+          if (error instanceof AscApiError && error.status === 409) {
+            const now = await ctx.asc.get<Offer[]>(`/v1/subscriptions/${sub.id}/introductoryOffers`, { "filter[territory]": territory, limit: 5 });
+            if (now.data.some((o) => !o.attributes?.endDate || o.attributes.endDate >= today)) return "already had an offer";
+          }
           throw error;
         }
       },

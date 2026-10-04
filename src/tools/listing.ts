@@ -92,7 +92,7 @@ function count(text: string | undefined | null, limit: number): string {
 /** The app info record to read or edit: the one being prepared if there is one, else the live one. */
 async function resolveAppInfo(ctx: ToolContext, appId: string) {
   const doc = await ctx.asc.get<Resource<AppInfoAttributes>[]>(`/v1/apps/${appId}/appInfos`, {
-    include: "appInfoLocalizations,primaryCategory,secondaryCategory,ageRatingDeclaration",
+    include: "appInfoLocalizations,primaryCategory,primarySubcategoryOne,primarySubcategoryTwo,secondaryCategory,ageRatingDeclaration",
     "limit[appInfoLocalizations]": 50,
   });
   const state = (i: Resource<AppInfoAttributes>) => i.attributes?.state ?? i.attributes?.appStoreState ?? "";
@@ -206,7 +206,12 @@ export const updateListing = defineTool({
     support_url: z.string().url().optional(),
     marketing_url: z.string().url().optional(),
     copyright: z.string().optional().describe('Version copyright, e.g. "2026 Example Inc."'),
-    primary_category: z.string().optional().describe("Category ID such as GAMES, GAMES_PUZZLE, UTILITIES, PRODUCTIVITY."),
+    primary_category: z.string().optional().describe("Category ID such as GAMES, UTILITIES, PRODUCTIVITY, HEALTH_AND_FITNESS."),
+    primary_subcategories: z
+      .array(z.string())
+      .max(2)
+      .optional()
+      .describe("Games only: up to two subcategories of the primary category, e.g. [\"GAMES_PUZZLE\", \"GAMES_BOARD\"]."),
     secondary_category: z.string().optional(),
   },
   async run(args, ctx) {
@@ -229,7 +234,8 @@ export const updateListing = defineTool({
       privacyChoicesUrl: args.privacy_choices_url,
     };
     const has = (o: Record<string, unknown>) => Object.values(o).some((value) => value !== undefined);
-    if (!has(versionChanges) && !has(infoChanges) && args.copyright === undefined && !args.primary_category && !args.secondary_category) {
+    const categoryChange = Boolean(args.primary_category || args.secondary_category || args.primary_subcategories);
+    if (!has(versionChanges) && !has(infoChanges) && args.copyright === undefined && !categoryChange) {
       throw new UserError("Pass at least one field to change.");
     }
 
@@ -253,7 +259,7 @@ export const updateListing = defineTool({
       }
     }
 
-    if (has(infoChanges) || args.primary_category || args.secondary_category) {
+    if (has(infoChanges) || categoryChange) {
       const { info, editable, included } = await resolveAppInfo(ctx, ref.id);
       if (!editable) {
         throw new UserError(`${log.toString()}\nThe app's name, subtitle, privacy URLs and categories can only change while a new version is being prepared. Create one with prepare_version.`);
@@ -279,10 +285,14 @@ export const updateListing = defineTool({
       if (args.secondary_category && relId(info, "secondaryCategory") !== args.secondary_category) {
         relationships.secondaryCategory = linkage("appCategories", args.secondary_category);
       }
+      const subRels = ["primarySubcategoryOne", "primarySubcategoryTwo"] as const;
+      args.primary_subcategories?.forEach((sub, i) => {
+        if (relId(info, subRels[i]!) !== sub) relationships[subRels[i]!] = linkage("appCategories", sub);
+      });
       if (Object.keys(relationships).length) {
         if (!ctx.dryRun) await ctx.asc.patch(`/v1/appInfos/${info.id}`, { data: { type: "appInfos", id: info.id, relationships } });
         log.step(ctx.dryRun, `Categories: ${Object.entries(relationships).map(([k, value]) => `${k} → ${value.data.id}`).join(", ")}`);
-      } else if (args.primary_category || args.secondary_category) {
+      } else if (categoryChange) {
         log.skip("Categories already set");
       }
     }
@@ -309,7 +319,7 @@ export const setWhatsNew = defineTool({
     const ref = await resolveApp(ctx, args.app);
     const log = new StepLog();
     if (args.target === "testflight") {
-      const info = await requireBuild(ctx, ref.id, args.build, args.platform);
+      const info = await requireBuild(ctx, ref.id, { build: args.build, platform: args.platform });
       await upsertBetaNotes(ctx, info.build.id, args.locale ?? "en-US", args.text, log);
       return [`${ref.name} build ${info.build.attributes?.version}`, STEP_LEGEND, log.toString()].join("\n");
     }

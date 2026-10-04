@@ -84,7 +84,7 @@ Then ask for things in plain language:
 | `ASC_APP_ID` | Default app, as an app ID, bundle ID or exact name. If it's unset and the key can see only one app, that app is used. |
 | `ASC_VENDOR_NUMBER` | Vendor number for `download_report` (shown in Payments and Financial Reports). |
 
-The key is only used to sign tokens. The server never logs it or puts it in tool output or error messages, and it only sends tokens to `api.appstoreconnect.apple.com`.
+The key is only used to sign tokens. The server never logs it or puts it in tool output or error messages, and it only sends tokens to `api.appstoreconnect.apple.com`. That host is fixed and can't be overridden.
 
 If the configuration is incomplete, the server still starts, and every tool returns an error explaining what's missing. Your client won't just show "failed to connect".
 
@@ -117,11 +117,11 @@ Tools take an `app` argument, which can be an app ID, a bundle ID or a name. Res
 | `create_beta_group` | yes | Creates a group (or returns the existing one with that name), optionally with a public link. |
 | `invite_testers` | yes | Invites new testers and adds existing ones to a group; people who were already invited elsewhere aren't an error. |
 | `remove_testers` | destructive | Removes testers from a group or from the app. |
-| `update_listing` | yes | Edits localized metadata and categories, showing old → new for each field and changing only what differs. |
+| `update_listing` | yes | Edits localized metadata, categories and game subcategories, showing old → new for each field and changing only what differs. |
 | `set_whats_new` | yes | App Store "What's New" or TestFlight "What to Test". |
 | `update_age_rating` | yes | Changes answers in the age rating questionnaire. |
 | `upload_screenshots` | destructive | Makes a screenshot set match a folder or list of files (`replace`), or appends to it (`append`). |
-| `replace_screenshot` | destructive | Replaces the screenshot at one position, without a gap in the listing. |
+| `replace_screenshot` | destructive | Replaces one screenshot (by position or ID), without a gap in the listing. |
 | `reorder_screenshots` | yes | Reorders a set. |
 | `delete_screenshots` | destructive | Deletes screenshots by position or ID. |
 | `prepare_version` | yes | Creates or renames the version being prepared, attaches a build, sets the release type. |
@@ -130,7 +130,7 @@ Tools take an `app` argument, which can be an app ID, a bundle ID or a name. Res
 | `cancel_review_submission` | destructive | Withdraws an active submission. |
 | `remove_intro_offers` | destructive | Bulk-deletes introductory offers (e.g. a free trial) across territories. |
 | `add_free_trial` | yes | Bulk-adds a free trial in every territory that lacks an introductory offer. |
-| `reply_to_review` | yes | Replies to a customer review; `replace: true` changes an existing reply. |
+| `reply_to_review` | destructive | Publishes a public reply to a customer review; `replace: true` changes an existing one. |
 
 **Escape hatch:** `asc_request(method, path, query, body)` calls any App Store Connect endpoint. GET works in read-only mode. POST, PATCH and DELETE need `ASC_WRITE=1`, and DELETE also needs `confirm: true`.
 
@@ -138,7 +138,7 @@ Tools take an `app` argument, which can be an app ID, a bundle ID or a name. Res
 
 - **Read-only by default.** Without `ASC_WRITE=1`, write tools refuse to change anything, but they still return a plan if called with `dry_run: true`.
 - **Destructive means dry run first.** Tools that delete things (screenshots, offers, testers) or can't be taken back (submitting for review) default to `dry_run: true`. The agent gets the plan, shows it to you, and calls again with `dry_run: false`. The tools carry MCP `destructiveHint` and `readOnlyHint` annotations, so clients can ask before running them.
-- **Order that never leaves a gap.** When `replace_screenshot` replaces an image, it uploads the new one, waits until Apple has processed it, puts it in place, and only then deletes the old one. If Apple rejects the image, nothing in the live listing changes.
+- **Order that never leaves a gap.** When `replace_screenshot` replaces an image, it uploads the new one, waits until Apple has processed it, puts it in place, and only then deletes the old one. If Apple rejects the image, nothing in the live listing changes. The one exception is a full set of 10. Apple won't allow an 11th screenshot even briefly, so the old one has to be deleted first, and the dry run says so.
 - **Least privilege.** See below.
 
 ## Choosing a key role
@@ -158,7 +158,7 @@ If a tool needs more access than the key has, the error says so. Keep keys out o
 Apple processes builds (usually 5 to 30 minutes) and images (usually seconds) asynchronously. Tools that wait take `wait_minutes`, and they send MCP progress notifications while they wait. When time runs out, they don't fail. They return a status such as "still processing; run distribute_build again with the same arguments". Re-running is always safe:
 
 - `distribute_build` skips groups the build is already in, notes that already match, and beta reviews already submitted. It treats Apple's "already submitted" response as success.
-- Screenshot tools match files to existing screenshots by MD5, so an image uploaded by an interrupted run isn't uploaded again. Each delete, reorder and commit is its own request. If a step fails partway, the error lists the steps that finished and says exactly how to finish.
+- Screenshot tools match files to existing screenshots by MD5, so an image uploaded by an interrupted run isn't uploaded again. Each delete, reorder and commit is its own request. If a step fails partway, the error lists the steps that finished and gives the exact call that finishes the job. For `replace_screenshot`, that call includes the `screenshot_id`, because positions can shift between runs. Leftovers from broken uploads never block a set; replacing or uploading to it cleans them up.
 - Bulk jobs (`remove_intro_offers`, `add_free_trial`, `invite_testers`) keep going past individual failures and report what succeeded, what failed and what wasn't tried. They stop early when the hourly rate limit (about 3,600 requests per key) runs low. Running them again finishes the job.
 
 HTTP retries: the server retries GETs, PATCHes and DELETEs on 5xx errors and connection resets, with jittered exponential backoff. It retries POSTs only when Apple says the request didn't happen (429 or 503), because a reset POST may have gone through. It honors `Retry-After` and refreshes the token once on a 401.

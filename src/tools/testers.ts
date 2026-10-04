@@ -55,7 +55,7 @@ export const listTesters = defineTool({
     const ref = await resolveApp(ctx, app);
     const groups = await listGroups(ctx, ref.id);
     const groupNames = new Map(groups.map((g) => [g.id, g.attributes?.name ?? g.id]));
-    const query: Record<string, string> = { "filter[apps]": ref.id, include: "betaGroups", "fields[betaGroups]": "name" };
+    const query: Record<string, string | number> = { "filter[apps]": ref.id, include: "betaGroups", "fields[betaGroups]": "name", "limit[betaGroups]": 50 };
     let scope = ref.name;
     if (group) {
       const [g] = await resolveGroups(ctx, ref.id, [group]);
@@ -241,6 +241,7 @@ async function findTester(ctx: ToolContext, email: string, appId?: string): Prom
     "filter[apps]": appId,
     include: "betaGroups",
     "fields[betaGroups]": "name",
+    "limit[betaGroups]": 50,
     limit: 5,
   });
   return doc.data.find((t) => t.attributes?.email?.toLowerCase() === email.toLowerCase());

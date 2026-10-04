@@ -17,7 +17,7 @@ import { defineTool, UserError, type ToolContext } from "./framework.js";
 import {
   appInput,
   EDITABLE_VERSION_STATES,
-  listVersions,
+  queryVersions,
   platformInput,
   requireBuild,
   resolveApp,
@@ -46,9 +46,8 @@ export const prepareVersion = defineTool({
     const ref = await resolveApp(ctx, args.app);
     const platform: Platform = args.platform ?? "IOS";
     const log = new StepLog();
-    const versions = await listVersions(ctx, ref.id, platform);
-    let version = versions.find((v) => v.attributes?.versionString === args.version_string);
-    const editable = versions.find((v) => EDITABLE_VERSION_STATES.has(versionState(v)));
+    let version = (await queryVersions(ctx, ref.id, platform, { versionString: args.version_string }))[0];
+    const editable = (await queryVersions(ctx, ref.id, platform, { states: [...EDITABLE_VERSION_STATES] }))[0];
 
     if (version) {
       if (!EDITABLE_VERSION_STATES.has(versionState(version))) {
@@ -78,7 +77,7 @@ export const prepareVersion = defineTool({
           log.done(`Created version ${args.version_string} (id ${version.id})`);
         } catch (error) {
           // A lost response from an earlier attempt: the version exists now.
-          const again = (await listVersions(ctx, ref.id, platform)).find((v) => v.attributes?.versionString === args.version_string);
+          const again = (await queryVersions(ctx, ref.id, platform, { versionString: args.version_string }))[0];
           if (!(error instanceof AscApiError) || !again) throw error;
           version = again;
           log.skip(`Version ${args.version_string} already exists (id ${version.id})`);
@@ -97,7 +96,7 @@ export const prepareVersion = defineTool({
     }
 
     if (args.build) {
-      const info = await requireBuild(ctx, ref.id, args.build, platform);
+      const info = await requireBuild(ctx, ref.id, { build: args.build, platform });
       const b = info.build.attributes;
       if (b?.processingState !== "VALID") throw new UserError(`${log.toString()}\nBuild ${b?.version} is ${b?.processingState}; only processed (VALID) builds can be attached.`);
       const buildVersion = info.preRelease?.attributes?.version;

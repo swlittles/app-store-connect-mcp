@@ -55,6 +55,24 @@ describe("subscriptions", () => {
     expect(h.fake.all("subscriptionIntroductoryOffers")).toEqual([]);
   });
 
+  it("add_free_trial counts a 409 as done only if the offer really exists", async () => {
+    h.fake.add("subscriptionAvailabilities", "avail-1", {}, { availableTerritories: ["USA", "GBR"] });
+    h.fake.get("subscriptions", "sub-yearly")!.relationships.subscriptionAvailability = "avail-1";
+    h.fake.db.get("subscriptionIntroductoryOffers")!.clear();
+    h.fake.get("subscriptions", "sub-yearly")!.relationships.introductoryOffers = [];
+    h.fake.add("territories", "USA", { currency: "USD" });
+    h.fake.add("territories", "GBR", { currency: "GBP" });
+    // An ended offer in GBR doesn't count; a validation 409 in USA must surface as a failure.
+    h.fake.add("subscriptionIntroductoryOffers", "old-gbr", { offerMode: "FREE_TRIAL", duration: "ONE_WEEK", numberOfPeriods: 1, endDate: "2025-01-01" }, { subscription: "sub-yearly", territory: "GBR" });
+    h.fake.afterCreate.subscriptionIntroductoryOffers = (f, _req, res) => {
+      if (res!.relationships.territory === "USA") return f.error(409, "ENTITY_ERROR", "No price for this territory");
+    };
+    const { text } = await h.call("add_free_trial", { subscription: "sub-yearly", duration: "ONE_WEEK", dry_run: false });
+    expect(text).toContain("2 territories, 0 already have");
+    expect(text).toContain("✓ added: 1");
+    expect(text).toMatch(/✗ USA: .*No price for this territory/);
+  });
+
   it("stops a bulk job early when the hourly rate limit runs low", async () => {
     h.fake.rateLimitRemaining = 80;
     const { text } = await h.call("remove_intro_offers", { subscription: "sub-yearly", dry_run: false });
@@ -178,11 +196,13 @@ describe("customer reviews and reports", () => {
   it("lists reviews and replies once, then requires replace", async () => {
     const list = await h.call("get_reviews", {});
     expect(list.text).toContain('★★☆☆☆ "Too hard" · puzzler · USA');
-    const reply = await h.call("reply_to_review", { review_id: "rev-1", text: "Thanks! Try the hint button." });
+    const plan = await h.call("reply_to_review", { review_id: "rev-1", text: "Thanks! Try the hint button." });
+    expect(plan.text).toContain("DRY RUN");
+    const reply = await h.call("reply_to_review", { review_id: "rev-1", text: "Thanks! Try the hint button.", dry_run: false });
     expect(reply.text).toContain("Replied to");
-    const again = await h.call("reply_to_review", { review_id: "rev-1", text: "Something else" });
+    const again = await h.call("reply_to_review", { review_id: "rev-1", text: "Something else", dry_run: false });
     expect(again.text).toContain("Pass replace: true");
-    const replaced = await h.call("reply_to_review", { review_id: "rev-1", text: "Something else", replace: true });
+    const replaced = await h.call("reply_to_review", { review_id: "rev-1", text: "Something else", replace: true, dry_run: false });
     expect(replaced.text).toContain("Replaced the reply");
     expect(h.fake.all("customerReviewResponses")).toHaveLength(1);
   });

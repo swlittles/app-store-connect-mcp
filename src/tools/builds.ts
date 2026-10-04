@@ -24,15 +24,19 @@ import {
   appInput,
   buildInput,
   buildSummary,
+  buildVersionInput,
   describeMissingBuild,
   findBuild,
   platformInput,
   resolveApp,
   resolveGroups,
   type BuildInfo,
+  type BuildQuery,
 } from "./lookup.js";
 
 const POLL_INTERVAL_MS = 30_000;
+/** An unfinished build upload older than this is treated as abandoned. */
+const STALE_UPLOAD_MS = 60 * 60_000;
 const MAX_WAIT_MINUTES = 30;
 
 const waitInput = (defaultMinutes: number) =>
@@ -91,11 +95,12 @@ export const getBuild = defineTool({
     "Shows one build in detail: processing and TestFlight states, export compliance, beta review, groups, What to Test notes and the App Store version it's attached to. " +
     "Set wait_minutes to wait for Apple to finish processing a fresh upload.",
   kind: "read",
-  input: { app: appInput, build: buildInput, platform: platformInput, wait_minutes: waitInput(0) },
-  async run({ app, build, platform, wait_minutes }, ctx) {
+  input: { app: appInput, build: buildInput, version: buildVersionInput, platform: platformInput, wait_minutes: waitInput(0) },
+  async run({ app, build, version, platform, wait_minutes }, ctx) {
     const ref = await resolveApp(ctx, app);
-    const { info, done } = await waitForProcessing(ctx, ref.id, build, platform, wait_minutes);
-    if (!info) return await describeMissingBuild(ctx, ref.id, build);
+    const q = { build, version, platform };
+    const { info, done } = await waitForProcessing(ctx, ref.id, q, wait_minutes);
+    if (!info) return await describeMissingBuild(ctx, ref.id, q);
 
     const doc = await ctx.asc.get<Resource<BuildAttributes>>(`/v1/builds/${info.build.id}`, {
       include: "buildBetaDetail,preReleaseVersion,betaGroups,betaBuildLocalizations,betaAppReviewSubmission,appStoreVersion",
@@ -127,16 +132,16 @@ export const getBuild = defineTool({
 async function waitForProcessing(
   ctx: ToolContext,
   appId: string,
-  build: string | undefined,
-  platform: Platform | undefined,
+  q: BuildQuery,
   minutes: number,
 ): Promise<{ info?: BuildInfo; done: boolean }> {
+  const build = q.build;
   const isDone = (b?: BuildInfo) => b !== undefined && b.build.attributes?.processingState !== "PROCESSING";
   if (minutes <= 0) {
-    const info = await findBuild(ctx, appId, build, platform);
+    const info = await findBuild(ctx, appId, q);
     return { info, done: isDone(info) };
   }
-  const { value, done } = await poll(() => findBuild(ctx, appId, build, platform), isDone, {
+  const { value, done } = await poll(() => findBuild(ctx, appId, q), isDone, {
     timeoutMs: minutes * 60_000,
     intervalMs: POLL_INTERVAL_MS,
     sleep: ctx.sleep,
@@ -162,6 +167,7 @@ export const distributeBuild = defineTool({
   input: {
     app: appInput,
     build: buildInput,
+    version: buildVersionInput,
     platform: platformInput,
     groups: z.array(z.string()).default([]).describe("Beta group names or IDs. Internal groups with access to all builds get it automatically."),
     notes: z.string().max(4000).optional().describe('"What to Test" text shown to testers.'),
@@ -182,11 +188,10 @@ export const distributeBuild = defineTool({
     const log = new StepLog();
 
     // 1. Find the build and wait for processing.
-    const { info } = ctx.dryRun
-      ? { info: await findBuild(ctx, ref.id, args.build, args.platform) }
-      : await waitForProcessing(ctx, ref.id, args.build, args.platform, args.wait_minutes);
+    const q = { build: args.build, version: args.version, platform: args.platform };
+    const { info } = ctx.dryRun ? { info: await findBuild(ctx, ref.id, q) } : await waitForProcessing(ctx, ref.id, q, args.wait_minutes);
     if (!info) {
-      return `${await describeMissingBuild(ctx, ref.id, args.build)}\nNothing else was changed. Run distribute_build again with the same arguments once it appears.`;
+      return `${await describeMissingBuild(ctx, ref.id, q)}\nNothing else was changed. Run distribute_build again with the same arguments once it appears.`;
     }
     const build = info.build;
     const number = build.attributes?.version ?? "?";
@@ -384,7 +389,7 @@ export const uploadBuild = defineTool({
     log.done(`${file.fileName}: ${(file.size / 1e6).toFixed(1)} MB, version ${version} (${buildNumber}), ${platform}`);
 
     // Already uploaded?
-    const existing = await findBuild(ctx, ref.id, buildNumber, platform);
+    const existing = await findBuild(ctx, ref.id, { build: buildNumber, version, platform });
     if (existing) {
       log.skip(`Build ${buildNumber} is already in App Store Connect: ${buildSummary(existing)}`);
       return finish(log, ["Next: distribute_build to send it to testers."]);
@@ -398,28 +403,38 @@ export const uploadBuild = defineTool({
       await ctx.progress("Uploading with altool…");
       const output = await uploadWithAltool(ctx, args.file, PLATFORM_FOR_ALTOOL[platform]);
       log.done(`Uploaded with altool. ${output}`);
-      return finish(log, await afterUpload(ctx, ref.id, buildNumber, platform, args.wait_minutes));
+      return finish(log, await afterUpload(ctx, ref.id, { build: buildNumber, version, platform }, args.wait_minutes));
     }
 
-    // Build upload API. Look for an earlier attempt first.
+    // Build upload API. Look at earlier attempts of this exact version and build, newest first.
     const uploads = await ctx.asc.get<Resource<BuildUploadAttributes>[]>(`/v1/apps/${ref.id}/buildUploads`, {
       "filter[cfBundleVersion]": buildNumber,
+      "filter[cfBundleShortVersionString]": version,
       "filter[platform]": platform,
-      limit: 5,
+      sort: "-uploadedDate",
+      limit: 10,
     });
-    for (const upload of uploads.data) {
-      const s = upload.attributes?.state;
-      if (s?.state === "COMPLETE" || s?.state === "PROCESSING") {
-        log.skip(`Build ${buildNumber} was already uploaded (upload ${upload.id}, ${s.state})`);
-        return finish(log, await afterUpload(ctx, ref.id, buildNumber, platform, args.wait_minutes));
+    const done = uploads.data.find((u) => ["COMPLETE", "PROCESSING"].includes(u.attributes?.state?.state ?? ""));
+    if (done) {
+      log.skip(`Build ${buildNumber} was already uploaded (upload ${done.id}, ${done.attributes?.state?.state})`);
+      return finish(log, await afterUpload(ctx, ref.id, { build: buildNumber, version, platform }, args.wait_minutes));
+    }
+    const newest = uploads.data[0];
+    if (newest?.attributes?.state?.state === "FAILED") {
+      const errors = (newest.attributes.state.errors ?? []).map((e) => `${e.code}: ${e.description ?? ""}`).join("; ");
+      throw new UserError(`The last upload of ${version} (${buildNumber}) failed: ${errors || "no detail"}. Fix the problem and upload with a new build number.`);
+    }
+    for (const upload of uploads.data.filter((u) => u.attributes?.state?.state === "AWAITING_UPLOAD")) {
+      // An unfinished attempt. If it's recent, something else (Xcode, Transporter) may still be sending it.
+      const started = Date.parse(upload.attributes?.createdDate ?? "");
+      if (Number.isFinite(started) && ctx.now() - started < STALE_UPLOAD_MS) {
+        throw new UserError(
+          `Another upload of ${version} (${buildNumber}) started ${Math.round((ctx.now() - started) / 60_000)} min ago and hasn't finished (upload ${upload.id}). If Xcode or Transporter is uploading it, wait; otherwise try again in an hour, when it counts as abandoned.`,
+        );
       }
-      if (s?.state === "FAILED") {
-        const errors = (s.errors ?? []).map((e) => `${e.code}: ${e.description ?? ""}`).join("; ");
-        throw new UserError(`An earlier upload of build ${buildNumber} failed: ${errors || "no detail"}. Fix the problem and upload with a new build number.`);
-      }
-      // AWAITING_UPLOAD: an interrupted attempt. Its upload URLs may have expired, so start over.
+      // Its upload URLs have expired by now, so start over.
       if (!ctx.dryRun) await ctx.asc.deleteIfExists(`/v1/buildUploads/${upload.id}`);
-      log.step(ctx.dryRun, `Discard unfinished upload ${upload.id} from an earlier attempt`);
+      log.step(ctx.dryRun, `Discard abandoned upload ${upload.id} from ${when(upload.attributes?.createdDate)}`);
     }
     if (ctx.dryRun) {
       log.plan("Reserve a build upload, send the file, commit it");
@@ -459,18 +474,12 @@ export const uploadBuild = defineTool({
       },
     });
     log.done("Committed the upload");
-    return finish(log, await afterUpload(ctx, ref.id, buildNumber, platform, args.wait_minutes, uploadId));
+    return finish(log, await afterUpload(ctx, ref.id, { build: buildNumber, version, platform }, args.wait_minutes, uploadId));
   },
 });
 
-async function afterUpload(
-  ctx: ToolContext,
-  appId: string,
-  buildNumber: string,
-  platform: Platform,
-  minutes: number,
-  uploadId?: string,
-): Promise<string[]> {
+async function afterUpload(ctx: ToolContext, appId: string, q: BuildQuery, minutes: number, uploadId?: string): Promise<string[]> {
+  const buildNumber = q.build!;
   if (uploadId && minutes > 0) {
     const { value } = await poll(
       () => ctx.asc.get<Resource<BuildUploadAttributes>>(`/v1/buildUploads/${uploadId}`),
@@ -482,7 +491,7 @@ async function afterUpload(
       throw new UserError(`Apple rejected build ${buildNumber}: ${(s.errors ?? []).map((e) => `${e.code}: ${e.description ?? ""}`).join("; ") || "no detail"}`);
     }
   }
-  const { info, done } = await waitForProcessing(ctx, appId, buildNumber, platform, uploadId ? 0 : minutes);
+  const { info, done } = await waitForProcessing(ctx, appId, q, uploadId ? 0 : minutes);
   if (info && done) return [`Processed: ${buildSummary(info)}`, "Next: distribute_build to send it to testers."];
   return [
     `Apple is processing build ${buildNumber}; this usually takes 5-30 minutes.`,
@@ -504,15 +513,12 @@ async function readIpaInfoPlist(path: string): Promise<{ CFBundleShortVersionStr
 }
 
 async function uploadWithAltool(ctx: ToolContext, file: string, platform: string): Promise<string> {
-  // altool needs the key as a file. Use ASC_KEY_PATH when given; otherwise write a private temp copy.
-  let keyPath = process.env.ASC_KEY_PATH;
-  let tempDir: string | undefined;
-  if (!keyPath) {
-    tempDir = mkdtempSync(join(tmpdir(), "asc-key-"));
-    keyPath = join(tempDir, `AuthKey_${ctx.config.keyId}.p8`);
-    writeFileSync(keyPath, ctx.config.privateKey.export({ format: "pem", type: "pkcs8" }), { mode: 0o600 });
-    chmodSync(keyPath, 0o600);
-  }
+  // altool needs the key as a file. Write a private temp copy of exactly the key the server signs
+  // with, so ASC_KEY and ASC_KEY_PATH can't disagree, and delete it afterwards.
+  const tempDir = mkdtempSync(join(tmpdir(), "asc-key-"));
+  const keyPath = join(tempDir, `AuthKey_${ctx.config.keyId}.p8`);
+  writeFileSync(keyPath, ctx.config.privateKey.export({ format: "pem", type: "pkcs8" }), { mode: 0o600 });
+  chmodSync(keyPath, 0o600);
   const args = ["altool", "--upload-app", "-f", file, "-t", platform, "--api-key", ctx.config.keyId, "--p8-file-path", keyPath];
   if (ctx.config.issuerId) args.push("--api-issuer", ctx.config.issuerId);
   else args.push("--api-key-subject", "user");
@@ -522,7 +528,7 @@ async function uploadWithAltool(ctx: ToolContext, file: string, platform: string
   } catch (error) {
     throw new UserError(`altool upload failed: ${truncate((error as Error).message, 1500)}`);
   } finally {
-    if (tempDir) rmSync(tempDir, { recursive: true, force: true });
+    rmSync(tempDir, { recursive: true, force: true });
   }
 }
 

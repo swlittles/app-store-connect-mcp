@@ -49,8 +49,8 @@ export const replyToReview = defineTool({
   name: "reply_to_review",
   title: "Reply to a customer review",
   description:
-    "Publishes a developer reply to a customer review. A review has at most one reply; to change an existing one pass replace: true, which deletes the old reply and posts the new one. Replies are public.",
-  kind: "write",
+    "Publishes a developer reply to a customer review. Replies are public, so this is a dry run until confirmed. A review has at most one reply; to change an existing one pass replace: true, which deletes the old reply and posts the new one.",
+  kind: "destructive",
   input: {
     review_id: z.string().describe("Review ID from get_reviews."),
     text: z.string().min(1).max(5970),

@@ -71,7 +71,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     write: isTruthy(env.ASC_WRITE),
     defaultAppId: env.ASC_APP_ID?.trim() || undefined,
     vendorNumber: env.ASC_VENDOR_NUMBER?.trim() || undefined,
-    baseUrl: (env.ASC_BASE_URL?.trim() || DEFAULT_BASE_URL).replace(/\/+$/, ""),
+    // Pinned: the token must only ever go to Apple.
+    baseUrl: DEFAULT_BASE_URL,
   };
 }
 

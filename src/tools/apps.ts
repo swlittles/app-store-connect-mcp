@@ -95,8 +95,27 @@ export const getAppStatus = defineTool({
   },
 });
 
+const CURRENT_VERSION_STATES = [
+  "ACCEPTED",
+  "DEVELOPER_REJECTED",
+  "IN_REVIEW",
+  "INVALID_BINARY",
+  "METADATA_REJECTED",
+  "PENDING_APPLE_RELEASE",
+  "PENDING_DEVELOPER_RELEASE",
+  "PREPARE_FOR_SUBMISSION",
+  "PROCESSING_FOR_DISTRIBUTION",
+  "READY_FOR_DISTRIBUTION",
+  "READY_FOR_REVIEW",
+  "REJECTED",
+  "WAITING_FOR_EXPORT_COMPLIANCE",
+  "WAITING_FOR_REVIEW",
+] as const satisfies readonly NonNullable<AppStoreVersionAttributes["appVersionState"]>[];
+
 async function listVersionsWithBuilds(ctx: ToolContext, appId: string): Promise<string[]> {
+  // Every state except superseded versions, so the current ones show however long the history is.
   const doc = await ctx.asc.get<Resource<AppStoreVersionAttributes>[]>(`/v1/apps/${appId}/appStoreVersions`, {
+    "filter[appVersionState]": CURRENT_VERSION_STATES.join(","),
     include: "build",
     "fields[builds]": "version,processingState",
     limit: 8,

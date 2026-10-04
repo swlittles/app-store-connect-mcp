@@ -211,6 +211,33 @@ describe("upload_build", () => {
     expect(text).toContain("Next: distribute_build");
   });
 
+  it("tells versions apart when build numbers repeat", async () => {
+    seedTestFlight(h.fake);
+    h.fake.add("preReleaseVersions", "prv-2", { version: "1.1", platform: "IOS" });
+    h.fake.afterCreate.buildUploadFiles = (_f, _req, res) => {
+      res!.attributes.uploadOperations = [{ method: "PUT", url: `https://upload.fake.example/${res!.id}`, offset: 0, length: res!.attributes.fileSize, requestHeaders: [] }];
+    };
+    const dir = mkdtempSync(join(tmpdir(), "asc-ipa-"));
+    const ipa = join(dir, "Example.ipa");
+    writeFileSync(ipa, Buffer.alloc(64));
+    // 1.0 (202610010900) exists; 1.1 with the same build number is a different build.
+    const { text } = await h.call("upload_build", { file: ipa, version: "1.1", build_number: "202610010900" });
+    expect(text).not.toContain("already in App Store Connect");
+    expect(h.fake.writes()[0]!.path).toBe("/v1/buildUploads");
+  });
+
+  it("won't discard an upload another tool may still be sending", async () => {
+    seedTestFlight(h.fake);
+    h.fake.add("buildUploads", "up-busy", { cfBundleVersion: "202610011400", cfBundleShortVersionString: "1.0", platform: "IOS", state: { state: "AWAITING_UPLOAD" }, createdDate: new Date(h.clock.now - 10 * 60_000).toISOString() }, { app: APP_ID });
+    const dir = mkdtempSync(join(tmpdir(), "asc-ipa-"));
+    const ipa = join(dir, "Example.ipa");
+    writeFileSync(ipa, Buffer.alloc(64));
+    const { text, isError } = await h.call("upload_build", { file: ipa, version: "1.0", build_number: "202610011400" });
+    expect(isError).toBe(true);
+    expect(text).toContain("started 10 min ago");
+    expect(h.fake.writes()).toEqual([]);
+  });
+
   it("doesn't upload a build number that already exists", async () => {
     seedTestFlight(h.fake);
     const dir = mkdtempSync(join(tmpdir(), "asc-ipa-"));
