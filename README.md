@@ -14,23 +14,35 @@ Apple doesn't ship an MCP server for App Store Connect. Xcode's `xcrun mcpbridge
 
 **1. Create an API key with the App Manager role.** In [App Store Connect](https://appstoreconnect.apple.com/access/integrations/api), go to **Users and Access > Integrations > App Store Connect API > Team Keys** and generate a key with **App Manager** access. Never use Admin. Download the `.p8` file (Apple only lets you download it once), and note the **Key ID** and the **Issuer ID**. The full walkthrough, including where to keep the key, is in [docs/api-key.md](docs/api-key.md).
 
-**2. Check the key:**
+**2. Download and build it.** You need [Node.js](https://nodejs.org) 20 or later and git.
+
+```sh
+git clone https://github.com/swlittles/app-store-connect-mcp.git ~/app-store-connect-mcp
+cd ~/app-store-connect-mcp
+npm install            # installs dependencies and builds dist/index.js
+```
+
+You can clone it anywhere. The examples below assume `~/app-store-connect-mcp`.
+
+**3. Check the key:**
 
 ```sh
 ASC_KEY_ID=YOUR_KEY_ID ASC_ISSUER_ID=YOUR_ISSUER_ID ASC_KEY_PATH=~/.appstoreconnect/AuthKey_YOUR_KEY_ID.p8 \
-  npx -y app-store-connect-mcp --check
+  node ~/app-store-connect-mcp/dist/index.js --check
 ```
 
-**3. Add it to your agent.**
+It lists the apps the key can see.
+
+**4. Add it to your agent.** Point the agent at `dist/index.js`, using absolute paths.
 
 Claude Code:
 
 ```sh
-claude mcp add asc \
+claude mcp add asc --scope user \
   -e ASC_KEY_ID=YOUR_KEY_ID \
   -e ASC_ISSUER_ID=YOUR_ISSUER_ID \
   -e ASC_KEY_PATH=$HOME/.appstoreconnect/AuthKey_YOUR_KEY_ID.p8 \
-  -- npx -y app-store-connect-mcp
+  -- node $HOME/app-store-connect-mcp/dist/index.js
 ```
 
 Add `-e ASC_WRITE=1` when you want the agent to make changes, and `-e ASC_APP_ID=com.example.app` to set a default app.
@@ -41,8 +53,8 @@ Cursor (`~/.cursor/mcp.json`) and other clients that use the `mcpServers` JSON f
 {
   "mcpServers": {
     "asc": {
-      "command": "npx",
-      "args": ["-y", "app-store-connect-mcp"],
+      "command": "node",
+      "args": ["/Users/you/app-store-connect-mcp/dist/index.js"],
       "env": {
         "ASC_KEY_ID": "YOUR_KEY_ID",
         "ASC_ISSUER_ID": "YOUR_ISSUER_ID",
@@ -57,10 +69,16 @@ Codex (`~/.codex/config.toml`):
 
 ```toml
 [mcp_servers.asc]
-command = "npx"
-args = ["-y", "app-store-connect-mcp"]
+command = "node"
+args = ["/Users/you/app-store-connect-mcp/dist/index.js"]
 env = { ASC_KEY_ID = "YOUR_KEY_ID", ASC_ISSUER_ID = "YOUR_ISSUER_ID", ASC_KEY_PATH = "/Users/you/.appstoreconnect/AuthKey_YOUR_KEY_ID.p8" }
 ```
+
+**Updating:** run `cd ~/app-store-connect-mcp && git pull && npm install`, then restart your agent. To stay on a release, check out its tag, for example `git checkout v0.1.0`.
+
+**Trying it without cloning:** `npx -y github:swlittles/app-store-connect-mcp --check` (with the same environment variables) downloads and builds it in npm's cache. That's fine for a quick try. For everyday use, clone it: npx rebuilds on first launch, which can be slower than an agent waits for a server to start.
+
+This project is distributed only through GitHub. It isn't published to npm, so a package with this name on npm isn't this project.
 
 Then ask for things in plain language:
 

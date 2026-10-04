@@ -34,11 +34,11 @@ You need to be the team's **Account Holder** or an **Admin** to create keys. The
    chmod 600 ~/.appstoreconnect/AuthKey_*.p8
    ```
 
-8. Check that it works:
+8. Check that it works (after installing the server as described in the [README](../README.md#quick-start)):
 
    ```sh
    ASC_KEY_ID=YOUR_KEY_ID ASC_ISSUER_ID=YOUR_ISSUER_ID ASC_KEY_PATH=~/.appstoreconnect/AuthKey_YOUR_KEY_ID.p8 \
-     npx -y app-store-connect-mcp --check
+     node ~/app-store-connect-mcp/dist/index.js --check
    ```
 
    It prints the apps the key can see and how many API requests are left this hour.

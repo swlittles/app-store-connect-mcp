@@ -1,7 +1,8 @@
 {
   "name": "app-store-connect-mcp",
   "version": "0.1.0",
-  "description": "MCP server for App Store Connect with workflow tools: ship TestFlight builds, manage testers, replace screenshots, edit listings, submit for review. Read-only by default.",
+  "private": true,
+  "description": "MCP server for App Store Connect with workflow tools: ship TestFlight builds, manage testers, replace screenshots, edit listings, submit for review. Read-only by default. Install from GitHub.",
   "license": "MIT",
   "author": "swlittles",
   "repository": {
@@ -40,8 +41,8 @@
     "test:live": "ASC_LIVE_TEST=1 vitest run test/live",
     "spec:update": "node scripts/update-spec.mjs",
     "spec:generate": "node scripts/update-spec.mjs --offline",
-    "prepublishOnly": "npm run check:public && npm run typecheck && npm test && npm run build",
-    "check:public": "node scripts/check-public.mjs"
+    "check:public": "node scripts/check-public.mjs",
+    "prepare": "npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.0",
