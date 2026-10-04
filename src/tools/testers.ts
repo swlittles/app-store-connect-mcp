@@ -137,7 +137,7 @@ export const inviteTesters = defineTool({
   input: {
     app: appInput,
     group: z.string().describe("Group name or ID."),
-    testers: z.array(testerInput).min(1).max(500).describe('Emails, or objects like {"email": "a@b.com", "first_name": "Ada"}.'),
+    testers: z.array(testerInput).min(1).max(500).describe('Emails, or objects like {"email": "ada@example.com", "first_name": "Ada"}.'),
   },
   async run(args, ctx) {
     const ref = await resolveApp(ctx, args.app);

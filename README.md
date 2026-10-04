@@ -12,12 +12,12 @@ Apple doesn't ship an MCP server for App Store Connect. Xcode's `xcrun mcpbridge
 
 ## Quick start
 
-**1. Create an API key.** In [App Store Connect](https://appstoreconnect.apple.com/access/integrations/api), go to **Users and Access > Integrations > App Store Connect API**, then **Team Keys**, and click **+**. Pick the narrowest role that covers what you need (see [Choosing a key role](#choosing-a-key-role)). **App Manager** covers every tool here except reports. Don't use **Admin**. Download the `.p8` file (Apple only lets you download it once), and note the **Key ID** and the **Issuer ID** shown above the list.
+**1. Create an API key with the App Manager role.** In [App Store Connect](https://appstoreconnect.apple.com/access/integrations/api), go to **Users and Access > Integrations > App Store Connect API > Team Keys** and generate a key with **App Manager** access. Never use Admin. Download the `.p8` file (Apple only lets you download it once), and note the **Key ID** and the **Issuer ID**. The full walkthrough, including where to keep the key, is in [docs/api-key.md](docs/api-key.md).
 
 **2. Check the key:**
 
 ```sh
-ASC_KEY_ID=ABC123DEFG ASC_ISSUER_ID=69a6de7e-… ASC_KEY_PATH=~/.appstoreconnect/AuthKey_ABC123DEFG.p8 \
+ASC_KEY_ID=YOUR_KEY_ID ASC_ISSUER_ID=YOUR_ISSUER_ID ASC_KEY_PATH=~/.appstoreconnect/AuthKey_YOUR_KEY_ID.p8 \
   npx -y app-store-connect-mcp --check
 ```
 
@@ -27,9 +27,9 @@ Claude Code:
 
 ```sh
 claude mcp add asc \
-  -e ASC_KEY_ID=ABC123DEFG \
-  -e ASC_ISSUER_ID=69a6de7e-… \
-  -e ASC_KEY_PATH=$HOME/.appstoreconnect/AuthKey_ABC123DEFG.p8 \
+  -e ASC_KEY_ID=YOUR_KEY_ID \
+  -e ASC_ISSUER_ID=YOUR_ISSUER_ID \
+  -e ASC_KEY_PATH=$HOME/.appstoreconnect/AuthKey_YOUR_KEY_ID.p8 \
   -- npx -y app-store-connect-mcp
 ```
 
@@ -44,9 +44,9 @@ Cursor (`~/.cursor/mcp.json`) and other clients that use the `mcpServers` JSON f
       "command": "npx",
       "args": ["-y", "app-store-connect-mcp"],
       "env": {
-        "ASC_KEY_ID": "ABC123DEFG",
-        "ASC_ISSUER_ID": "69a6de7e-…",
-        "ASC_KEY_PATH": "/Users/you/.appstoreconnect/AuthKey_ABC123DEFG.p8"
+        "ASC_KEY_ID": "YOUR_KEY_ID",
+        "ASC_ISSUER_ID": "YOUR_ISSUER_ID",
+        "ASC_KEY_PATH": "/Users/you/.appstoreconnect/AuthKey_YOUR_KEY_ID.p8"
       }
     }
   }
@@ -59,7 +59,7 @@ Codex (`~/.codex/config.toml`):
 [mcp_servers.asc]
 command = "npx"
 args = ["-y", "app-store-connect-mcp"]
-env = { ASC_KEY_ID = "ABC123DEFG", ASC_ISSUER_ID = "69a6de7e-…", ASC_KEY_PATH = "/Users/you/.appstoreconnect/AuthKey_ABC123DEFG.p8" }
+env = { ASC_KEY_ID = "YOUR_KEY_ID", ASC_ISSUER_ID = "YOUR_ISSUER_ID", ASC_KEY_PATH = "/Users/you/.appstoreconnect/AuthKey_YOUR_KEY_ID.p8" }
 ```
 
 Then ask for things in plain language:
@@ -142,6 +142,9 @@ Tools take an `app` argument, which can be an app ID, a bundle ID or a name. Res
 - **Least privilege.** See below.
 
 ## Choosing a key role
+
+Use **App Manager** unless you have a reason not to. Step-by-step instructions are in [docs/api-key.md](docs/api-key.md).
+
 
 | Role | Enough for |
 | --- | --- |

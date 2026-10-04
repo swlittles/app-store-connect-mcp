@@ -8,3 +8,4 @@ coverage/
 spec/openapi.oas.json
 test/live/.recordings/
 .DS_Store
+.public-denylist
