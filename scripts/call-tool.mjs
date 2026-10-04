@@ -15,7 +15,8 @@ if (!name) {
   console.error("Usage: node scripts/call-tool.mjs <tool> '<json arguments>' | --list");
   process.exit(2);
 }
-const transport = new StdioClientTransport({ command: process.execPath, args: ["dist/index.js"], env: process.env, stderr: "inherit" });
+// Development runs never auto-update the checkout they run from.
+const transport = new StdioClientTransport({ command: process.execPath, args: ["dist/index.js"], env: { ...process.env, ASC_AUTO_UPDATE: "0" }, stderr: "inherit" });
 const client = new Client({ name: "call-tool", version: "1" });
 await client.connect(transport);
 try {

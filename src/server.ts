@@ -14,6 +14,8 @@ export type ServerRuntime = Runtime & {
   /** The tools to expose, after ASC_TOOLS and ASC_DISABLED_TOOLS. Defaults to every tool. */
   tools?: readonly AnyTool[];
   disabledTools?: readonly string[];
+  /** Extra lines for the agent, e.g. that the server was just updated. */
+  notices?: string[];
 };
 
 export const VERSION: string = (createRequire(import.meta.url)("../package.json") as { version: string }).version;
@@ -65,6 +67,7 @@ export function createServer(runtime: ServerRuntime): McpServer {
       instructions: [
         "Manage apps in Apple's App Store Connect: TestFlight builds and testers, store listing, screenshots, subscriptions, App Review submission, customer reviews and reports.",
         mode,
+        ...(runtime.notices ?? []),
         ...(disabled.length ? [`The user turned off these tools (ASC_TOOLS / ASC_DISABLED_TOOLS): ${disabled.join(", ")}. Don't work around them with asc_request.`] : []),
         "Start with list_apps or get_app_status. Tools take an app ID, bundle ID or name; ASC_APP_ID sets a default.",
         "Prefer the workflow tools (distribute_build, replace_screenshot, upload_screenshots, update_listing, submit_for_review…) over asc_request: they check state first and are safe to re-run.",

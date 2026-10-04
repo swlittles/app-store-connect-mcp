@@ -74,7 +74,7 @@ args = ["/Users/you/app-store-connect-mcp/dist/index.js"]
 env = { ASC_KEY_ID = "YOUR_KEY_ID", ASC_ISSUER_ID = "YOUR_ISSUER_ID", ASC_KEY_PATH = "/Users/you/.appstoreconnect/AuthKey_YOUR_KEY_ID.p8" }
 ```
 
-**Updating:** run `cd ~/app-store-connect-mcp && git pull && npm ci`, then restart your agent. To stay on a release, check out its tag, for example `git fetch --tags && git checkout v0.2.0 && npm ci`. Use `npm ci` rather than `npm install`: it never rewrites `package-lock.json`, so `git pull` always applies cleanly.
+**Updates are automatic.** Each time your agent starts the server, the server checks GitHub for a newer release (at most every 30 minutes) and installs it in the background. The update is used from the next time the agent starts the server; the running server isn't interrupted. See [Updates](#updates).
 
 **Trying it without cloning:** `npx -y github:swlittles/app-store-connect-mcp --check` (with the same environment variables) downloads and builds it in npm's cache. That's fine for a quick try. For everyday use, clone it: npx rebuilds on first launch, which can be slower than an agent waits for a server to start.
 
@@ -103,10 +103,29 @@ Then ask for things in plain language:
 | `ASC_VENDOR_NUMBER` | Vendor number for `download_report` (shown in Payments and Financial Reports). |
 | `ASC_TOOLS` | Only offer these tools or groups. Default: all. See [Turning tools off](#turning-tools-off). |
 | `ASC_DISABLED_TOOLS` | Never offer these tools or groups. |
+| `ASC_AUTO_UPDATE` | `0` turns off automatic updates. On by default. |
+| `ASC_UPDATE_CHANNEL` | `release` (default) follows GitHub releases; `main` follows the newest code on the main branch, including unreleased changes. |
 
 The key is only used to sign tokens. The server never logs it or puts it in tool output or error messages, and it only sends tokens to `api.appstoreconnect.apple.com`. That host is fixed and can't be overridden.
 
 If the configuration is incomplete, the server still starts, and every tool returns an error explaining what's missing. Your client won't just show "failed to connect".
+
+## Updates
+
+Clones of this repository update themselves:
+
+- **When:** on each server start, the server checks GitHub at most every 30 minutes. It does this in the background after starting, so the agent never waits on it.
+- **What:** with the default `release` channel, the newest version tag (`v0.3.0`, `v0.4.0`, …). With `ASC_UPDATE_CHANNEL=main`, the newest commit on `main`.
+- **How:** `git fetch`, then switch to the new version. Then it rebuilds, which takes seconds and works offline. `npm ci` runs instead when dependencies changed. The new version is used from the next start.
+- **Safe to leave on:**
+  - It only moves forward to the newer version, and never touches a copy with local edits or its own commits, such as a development clone.
+  - If installing or building fails, it switches back to the previous version and rebuilds it. It won't retry the failed version until a newer one is published.
+  - Two servers starting at once can't both update; one waits for the next check.
+- **Check status:** `node ~/app-store-connect-mcp/dist/index.js --check` prints the version and the last update result.
+- **Update now:** `node ~/app-store-connect-mcp/dist/index.js --update`.
+- **Turn it off or pin a version:** set `ASC_AUTO_UPDATE=0`, then pick a version yourself, for example `git checkout v0.3.0 && npm ci`.
+
+Copies installed before v0.3.0 don't have the updater yet. Update those once by hand: `cd ~/app-store-connect-mcp && git checkout -- package-lock.json && git fetch --tags && git checkout v0.3.0 && npm ci`.
 
 ## Turning tools off
 

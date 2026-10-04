@@ -12,6 +12,10 @@ Please report security problems privately through [GitHub's security advisories]
 - `upload_build` with `method: "altool"` writes a temporary copy of the key, readable only by you, for `xcrun altool`, and deletes it when the upload finishes.
 - The App Review demo password is never echoed back in tool output.
 
+## Automatic updates
+
+By default, installs update themselves to each new GitHub release of this repository, so you're trusting future releases the same way you trusted the one you installed. Releases are tagged from `main`, after CI passes. To review updates before they run, set `ASC_AUTO_UPDATE=0`, then update by checking out a tag yourself. The updater only talks to the `origin` remote you cloned from, and it never sends your key or any App Store Connect data anywhere.
+
 ## Recommendations
 
 - Use a key with the **App Manager** role or narrower. Never use Admin.

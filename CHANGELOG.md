@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0
+
+- Automatic updates. A cloned install checks GitHub for a new release on start (at most every 30 minutes), installs it in the background, and uses it from the next start.
+  - It only fast-forwards clean clones and leaves development copies alone.
+  - If an install or build fails, it rolls back and doesn't retry that version.
+  - `ASC_AUTO_UPDATE=0` turns it off. `ASC_UPDATE_CHANNEL=main` follows unreleased code.
+- `--update` updates now; `--check` shows the version and last update result.
+- The agent is told when the server was just updated, or when an update failed.
+
 ## 0.2.0
 
 - `ASC_TOOLS` and `ASC_DISABLED_TOOLS` choose which tools the server offers, by tool name or by group (`read`, `testflight`, `listing`, `screenshots`, `release`, `subscriptions`, `reviews`, `raw`, `destructive`, `all`). An unknown entry makes every tool refuse to run, so a typo can't leave one switched on.

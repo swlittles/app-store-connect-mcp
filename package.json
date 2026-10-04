@@ -1,6 +1,6 @@
 {
   "name": "app-store-connect-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "MCP server for App Store Connect with workflow tools: ship TestFlight builds, manage testers, replace screenshots, edit listings, submit for review. Read-only by default. Install from GitHub.",
   "license": "MIT",
