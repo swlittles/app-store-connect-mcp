@@ -13,6 +13,7 @@ import type {
   ReviewSubmissionItemAttributes,
 } from "../asc/types.js";
 import { STEP_LEGEND, StepLog, when } from "./format.js";
+import { unansweredAgeQuestions } from "./listing.js";
 import { defineTool, UserError, type ToolContext } from "./framework.js";
 import {
   appInput,
@@ -101,7 +102,7 @@ export const prepareVersion = defineTool({
       if (b?.processingState !== "VALID") throw new UserError(`${log.toString()}\nBuild ${b?.version} is ${b?.processingState}; only processed (VALID) builds can be attached.`);
       const buildVersion = info.preRelease?.attributes?.version;
       if (buildVersion && buildVersion !== args.version_string) {
-        log.warn(`Build ${b?.version} is version ${buildVersion}, not ${args.version_string}; Apple will refuse it. Upload a build with CFBundleShortVersionString ${args.version_string}.`);
+        log.warn(`Build ${b?.version} is version ${buildVersion}, but this App Store version is ${args.version_string}. App Store Connect lets you attach it, but the versions should match before you submit; upload a build with CFBundleShortVersionString ${args.version_string}.`);
       }
       const attached = version ? await ctx.asc.get<Resource | null>(`/v1/appStoreVersions/${version.id}/relationships/build`).catch(() => ({ data: null })) : { data: null };
       if (attached.data?.id === info.build.id) log.skip(`Build ${b?.version} is already attached`);
@@ -145,11 +146,14 @@ async function preflight(ctx: ToolContext, appId: string, primaryLocale: string,
     if (!withShots.length) problems.push(`${primary.attributes?.locale}: no screenshots.`);
   }
 
-  const infos = await ctx.asc.get<Resource<AppInfoAttributes>[]>(`/v1/apps/${appId}/appInfos`, { include: "appInfoLocalizations,primaryCategory" });
+  const infos = await ctx.asc.get<Resource<AppInfoAttributes>[]>(`/v1/apps/${appId}/appInfos`, { include: "appInfoLocalizations,primaryCategory,ageRatingDeclaration" });
   const included = new Included(infos.included);
   const info = infos.data.find((i) => EDITABLE_VERSION_STATES.has(i.attributes?.state ?? i.attributes?.appStoreState ?? "")) ?? infos.data[0];
   if (info) {
     if (!relId(info, "primaryCategory")) problems.push("No primary category.");
+    const age = included.one<Record<string, unknown>>(info, "ageRatingDeclaration", "ageRatingDeclarations");
+    const unanswered = unansweredAgeQuestions(age?.attributes);
+    if (unanswered.length) problems.push(`The age rating questionnaire has ${unanswered.length} unanswered question${unanswered.length === 1 ? "" : "s"} (use update_age_rating).`);
     for (const l of included.many<AppInfoLocalizationAttributes>(info, "appInfoLocalizations", "appInfoLocalizations")) {
       if (!l.attributes?.privacyPolicyUrl) problems.push(`${l.attributes?.locale}: no privacy policy URL.`);
     }

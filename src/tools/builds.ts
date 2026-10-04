@@ -18,7 +18,7 @@ import type {
   Platform,
 } from "../asc/types.js";
 import { describeFile, performUploadOperations } from "../asc/upload.js";
-import { STEP_LEGEND, StepLog, truncate, when } from "./format.js";
+import { plural, STEP_LEGEND, StepLog, truncate, when } from "./format.js";
 import { defineTool, UserError, type ToolContext } from "./framework.js";
 import {
   appInput,
@@ -254,6 +254,7 @@ export const distributeBuild = defineTool({
     const hasExternal = groups.some((g) => !g.attributes?.isInternalGroup);
     const submit = args.submit_for_beta_review ?? hasExternal;
     if (submit) await submitBetaReview(ctx, build.id, log);
+    else if (hasExternal) log.skip("Beta app review skipped (submit_for_beta_review: false); external testers can't install it until it's approved");
     else log.skip("Beta app review not needed (no external groups)");
 
     // 6. Report.
@@ -425,7 +426,11 @@ export const uploadBuild = defineTool({
       throw new UserError(`The last upload of ${version} (${buildNumber}) failed: ${errors || "no detail"}. Fix the problem and upload with a new build number.`);
     }
     for (const upload of uploads.data.filter((u) => u.attributes?.state?.state === "AWAITING_UPLOAD")) {
-      // An unfinished attempt. If it's recent, something else (Xcode, Transporter) may still be sending it.
+      // Xcode registers a placeholder upload, with no files, whenever it exports an archive for
+      // App Store Connect, even if nothing is uploaded. Those are harmless; leave them alone.
+      const files = await ctx.asc.get<Resource[]>(`/v1/buildUploads/${upload.id}/buildUploadFiles`, { limit: 1 });
+      if (!files.data.length) continue;
+      // A real upload that hasn't finished. If it's recent, something (Xcode, Transporter) may still be sending it.
       const started = Date.parse(upload.attributes?.createdDate ?? "");
       if (Number.isFinite(started) && ctx.now() - started < STALE_UPLOAD_MS) {
         throw new UserError(
@@ -458,7 +463,7 @@ export const uploadBuild = defineTool({
     });
     const fileId = reserved!.data.id;
     const operations = reserved!.data.attributes?.uploadOperations ?? [];
-    log.done(`Reserved upload ${uploadId} (${operations.length} parts)`);
+    log.done(`Reserved upload ${uploadId} (${plural(operations.length, "part")})`);
     await performUploadOperations(operations, file.path, {
       fetch: ctx.asc.fetcher,
       signal: ctx.signal,

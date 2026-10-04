@@ -2,6 +2,7 @@ import { gzipSync } from "node:zlib";
 import { beforeEach, describe, expect, it } from "vitest";
 import { LOC_ID, seedApp, seedTestFlight, seedVersion, VERSION_ID } from "./helpers/fixtures.js";
 import { APP_ID, makeHarness, type Harness } from "./helpers/harness.js";
+import { AGE_RATING_LEVEL_QUESTIONS, AGE_RATING_YES_NO_QUESTIONS } from "../src/tools/listing.js";
 
 let h: Harness;
 
@@ -12,7 +13,10 @@ beforeEach(() => {
 
 function seedAppInfo(): void {
   h.fake.add("appCategories", "GAMES", {});
-  h.fake.add("ageRatingDeclarations", "age-1", { violenceCartoonOrFantasy: "NONE", gambling: false });
+  h.fake.add("ageRatingDeclarations", "age-1", {
+    ...Object.fromEntries(AGE_RATING_LEVEL_QUESTIONS.map((q) => [q, "NONE"])),
+    ...Object.fromEntries(AGE_RATING_YES_NO_QUESTIONS.map((q) => [q, false])),
+  });
   h.fake.add("appInfos", "info-1", { state: "PREPARE_FOR_SUBMISSION", appStoreAgeRating: "FOUR_PLUS" }, { app: APP_ID, primaryCategory: "GAMES", ageRatingDeclaration: "age-1" });
   h.fake.add("appInfoLocalizations", "ail-en", { locale: "en-US", name: "Example App", subtitle: "Daily puzzles", privacyPolicyUrl: "https://example.com/privacy" }, { appInfo: "info-1" });
 }
@@ -136,7 +140,7 @@ describe("prepare_version and submit_for_review", () => {
     const { text, isError } = await h.call("prepare_version", { version_string: "1.0.1", build: "latest" });
     expect(isError, text).toBe(false);
     expect(text).toContain("Rename the version being prepared from 1.0 to 1.0.1");
-    expect(text).toContain("Build 202610010900 is version 1.0, not 1.0.1");
+    expect(text).toContain("Build 202610010900 is version 1.0, but this App Store version is 1.0.1");
     expect(h.fake.get("appStoreVersions", VERSION_ID)!.relationships.build).toBe("aaaaaaaa-0000-4000-8000-000000000001");
   });
 

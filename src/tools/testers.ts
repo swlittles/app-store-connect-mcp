@@ -59,6 +59,8 @@ export const listTesters = defineTool({
     let scope = ref.name;
     if (group) {
       const [g] = await resolveGroups(ctx, ref.id, [group]);
+      // Apple allows only one relationship filter here, and the group already implies the app.
+      delete query["filter[apps]"];
       query["filter[betaGroups]"] = g!.id;
       scope = `"${g!.attributes?.name}"`;
     }
@@ -203,7 +205,8 @@ export const removeTesters = defineTool({
   name: "remove_testers",
   title: "Remove testers",
   description:
-    "Removes testers from one beta group, or from the app entirely (every group, and their access to builds) when group is omitted.",
+    "Removes testers from one beta group, or from the app entirely (every group, and their access to builds) when group is omitted. " +
+    "Removing someone from their last group leaves them listed as a tester of the app with no groups; omit group to remove them completely.",
   kind: "destructive",
   input: {
     app: appInput,

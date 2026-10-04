@@ -229,6 +229,8 @@ describe("upload_build", () => {
   it("won't discard an upload another tool may still be sending", async () => {
     seedTestFlight(h.fake);
     h.fake.add("buildUploads", "up-busy", { cfBundleVersion: "202610011400", cfBundleShortVersionString: "1.0", platform: "IOS", state: { state: "AWAITING_UPLOAD" }, createdDate: new Date(h.clock.now - 10 * 60_000).toISOString() }, { app: APP_ID });
+    // A real upload in flight has a file (Xcode's export placeholders don't).
+    h.fake.add("buildUploadFiles", "file-busy", { fileName: "Example.ipa", fileSize: 64, assetType: "ASSET" }, { buildUpload: "up-busy" });
     const dir = mkdtempSync(join(tmpdir(), "asc-ipa-"));
     const ipa = join(dir, "Example.ipa");
     writeFileSync(ipa, Buffer.alloc(64));

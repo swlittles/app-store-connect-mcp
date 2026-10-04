@@ -320,6 +320,11 @@ export class FakeAsc {
   // -------------------------------------------------------------------------------------------
 
   private list(items: Res[], req: RecordedRequest, url: URL): Response {
+    // Seen on the real API: /v1/betaTesters takes at most one relationship filter.
+    if (req.path === "/v1/betaTesters") {
+      const relFilters = Object.keys(req.query).filter((k) => /^filter\[(apps|betaGroups|builds)\]$/.test(k));
+      if (relFilters.length > 1) throw this.error(400, "PARAMETER_ERROR.INVALID", "Only one relationship filter can be applied.");
+    }
     let rows = items.filter((r) => this.matches(r, req.query));
     const sort = req.query.sort;
     if (sort) {

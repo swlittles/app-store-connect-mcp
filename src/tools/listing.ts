@@ -36,6 +36,41 @@ export const LIMITS = {
 
 const SECRET_FIELDS = new Set(["demoAccountPassword"]);
 
+/** A URL, or "" to clear the field. */
+const urlOrEmpty = z.union([z.string().url(), z.literal("")]);
+
+/** Age rating questions Apple requires. While any is unanswered, it rejects updates that don't answer them all. */
+export const AGE_RATING_LEVEL_QUESTIONS = [
+  "alcoholTobaccoOrDrugUseOrReferences",
+  "contests",
+  "gamblingSimulated",
+  "gunsOrOtherWeapons",
+  "horrorOrFearThemes",
+  "matureOrSuggestiveThemes",
+  "medicalOrTreatmentInformation",
+  "profanityOrCrudeHumor",
+  "sexualContentGraphicAndNudity",
+  "sexualContentOrNudity",
+  "violenceCartoonOrFantasy",
+  "violenceRealistic",
+  "violenceRealisticProlongedGraphicOrSadistic",
+] as const satisfies readonly (keyof AgeRatingDeclarationAttributes)[];
+export const AGE_RATING_YES_NO_QUESTIONS = [
+  "advertising",
+  "ageAssurance",
+  "gambling",
+  "healthOrWellnessTopics",
+  "lootBox",
+  "parentalControls",
+  "unrestrictedWebAccess",
+  "userGeneratedContent",
+] as const satisfies readonly (keyof AgeRatingDeclarationAttributes)[];
+const REQUIRED_AGE_QUESTIONS: readonly string[] = [...AGE_RATING_LEVEL_QUESTIONS, ...AGE_RATING_YES_NO_QUESTIONS];
+
+export function unansweredAgeQuestions(attributes: Record<string, unknown> | undefined): string[] {
+  return REQUIRED_AGE_QUESTIONS.filter((q) => attributes?.[q] === null || attributes?.[q] === undefined);
+}
+
 type Attributes = Record<string, unknown>;
 
 /**
@@ -55,8 +90,11 @@ async function upsert(
   },
 ): Promise<boolean> {
   const current = options.existing?.attributes ?? {};
+  // Apple clears a field with null; an empty string fails validation (URLs) or triggers it (review details).
   const changed = Object.fromEntries(
-    Object.entries(options.changes).filter(([key, value]) => value !== undefined && !same(current[key], value)),
+    Object.entries(options.changes)
+      .filter(([key, value]) => value !== undefined && !same(current[key], value))
+      .map(([key, value]) => [key, value === "" ? null : value]),
   );
   const keys = Object.keys(changed);
   if (!keys.length) {
@@ -64,18 +102,37 @@ async function upsert(
     return false;
   }
   for (const key of keys) {
-    const show = (v: unknown) => (SECRET_FIELDS.has(key) ? (v ? "••••" : "empty") : v === null || v === undefined || v === "" ? "empty" : `"${truncate(String(v), 120)}"`);
+    const show = (v: unknown) =>
+      SECRET_FIELDS.has(key)
+        ? v
+          ? "••••"
+          : "empty"
+        : v === null || v === undefined || v === ""
+          ? "empty"
+          : typeof v === "string"
+            ? `"${truncate(v, 120)}"`
+            : String(v);
     log.step(ctx.dryRun, `${options.label} ${key}: ${options.existing ? `${show(current[key])} → ` : ""}${show(changed[key])}`);
   }
   if (ctx.dryRun) return true;
-  if (options.existing) {
-    await ctx.asc.patch(`/v1/${options.type}/${options.existing.id}`, {
-      data: { type: options.type, id: options.existing.id, attributes: changed },
-    });
-  } else {
-    await ctx.asc.post(`/v1/${options.type}`, {
-      data: { type: options.type, attributes: { ...options.createAttributes, ...changed }, relationships: options.relationships },
-    });
+  try {
+    if (options.existing) {
+      await ctx.asc.patch(`/v1/${options.type}/${options.existing.id}`, {
+        data: { type: options.type, id: options.existing.id, attributes: changed },
+      });
+    } else {
+      await ctx.asc.post(`/v1/${options.type}`, {
+        data: { type: options.type, attributes: { ...options.createAttributes, ...changed }, relationships: options.relationships },
+      });
+    }
+  } catch (error) {
+    if (error instanceof AscApiError && error.status === 409 && error.hasCode("STATE_ERROR")) {
+      const why = error.mentions("whatsNew")
+        ? "Apple doesn't allow What's New on an app's first version, since there's no earlier release to describe changes from. Leave it empty; it becomes editable from the next version."
+        : "That field can't change while the version is in its current state.";
+      throw new UserError(`Nothing was changed for ${options.label}. ${why}\n${error.message}`);
+    }
+    throw error;
   }
   return true;
 }
@@ -130,15 +187,21 @@ export const getListing = defineTool({
     const { info, included, state } = await resolveAppInfo(ctx, ref.id);
     const primary = included.one(info, "primaryCategory", "appCategories")?.id ?? relId(info, "primaryCategory");
     const secondary = included.one(info, "secondaryCategory", "appCategories")?.id ?? relId(info, "secondaryCategory");
-    out.push("", `App info (${state}, id ${info.id}): primary category ${primary ?? "none"}${secondary ? `, secondary ${secondary}` : ""} · age rating ${info.attributes?.appStoreAgeRating ?? "?"}`);
+    out.push("", `App info (${state}, id ${info.id}): primary category ${primary ?? "none"}${secondary ? `, secondary ${secondary}` : ""} · age rating ${info.attributes?.appStoreAgeRating ?? "not rated yet"}`);
     for (const l of included.many<AppInfoLocalizationAttributes>(info, "appInfoLocalizations", "appInfoLocalizations").filter((l) => wantLocale(l.attributes?.locale))) {
       const a = l.attributes ?? {};
       out.push(`  ${a.locale}: name "${a.name ?? ""}" (${count(a.name, LIMITS.name)}) · subtitle "${a.subtitle ?? ""}" (${count(a.subtitle, LIMITS.subtitle)}) · privacy policy ${a.privacyPolicyUrl ?? "none"}`);
     }
     const age = included.one<AgeRatingDeclarationAttributes>(info, "ageRatingDeclaration", "ageRatingDeclarations");
     if (age?.attributes) {
+      const unanswered = unansweredAgeQuestions(age.attributes);
       const flagged = Object.entries(age.attributes).filter(([, value]) => value !== null && value !== "NONE" && value !== false);
-      out.push(`  Age rating declaration (id ${age.id}): ${flagged.length ? flagged.map(([k, value]) => `${k}=${value}`).join(", ") : "everything NONE/false"}`);
+      const answers = flagged.length ? flagged.map(([k, value]) => `${k}=${value}`).join(", ") : "nothing flagged";
+      out.push(
+        unanswered.length === REQUIRED_AGE_QUESTIONS.length
+          ? `  Age rating questionnaire (id ${age.id}): not answered yet. Use update_age_rating (fill_unanswered: true starts from all NONE/false).`
+          : `  Age rating questionnaire (id ${age.id}): ${answers}${unanswered.length ? `; unanswered: ${unanswered.join(", ")}` : ""}`,
+      );
     }
 
     out.push("", `Version ${v.attributes?.versionString} (${versionState(v)}, id ${v.id}) · copyright "${v.attributes?.copyright ?? ""}" · release ${v.attributes?.releaseType ?? "?"}`);
@@ -197,14 +260,14 @@ export const updateListing = defineTool({
     locale: z.string().optional().describe("Defaults to the primary locale."),
     name: z.string().max(LIMITS.name).optional(),
     subtitle: z.string().max(LIMITS.subtitle).optional(),
-    privacy_policy_url: z.string().url().optional(),
-    privacy_choices_url: z.string().url().optional(),
+    privacy_policy_url: urlOrEmpty.optional(),
+    privacy_choices_url: urlOrEmpty.optional(),
     description: z.string().max(LIMITS.description).optional(),
     keywords: z.string().max(LIMITS.keywords).optional().describe("Comma-separated, 100 characters in total."),
     promotional_text: z.string().max(LIMITS.promotionalText).optional(),
     whats_new: z.string().max(LIMITS.whatsNew).optional(),
-    support_url: z.string().url().optional(),
-    marketing_url: z.string().url().optional(),
+    support_url: urlOrEmpty.optional(),
+    marketing_url: urlOrEmpty.optional(),
     copyright: z.string().optional().describe('Version copyright, e.g. "2026 Example Inc."'),
     primary_category: z.string().optional().describe("Category ID such as GAMES, UTILITIES, PRODUCTIVITY, HEALTH_AND_FITNESS."),
     primary_subcategories: z
@@ -349,7 +412,11 @@ export const setReviewDetails = defineTool({
     platform: platformInput,
     contact_first_name: z.string().optional(),
     contact_last_name: z.string().optional(),
-    contact_phone: z.string().optional().describe("Include the country code, e.g. +1 555 010 0000."),
+    contact_phone: z
+      .string()
+      .regex(/^\+\d[\d\s().-]{6,}$/, "Start with + and the country code, e.g. +1 555 010 0000")
+      .optional()
+      .describe("Include the country code, e.g. +1 555 010 0000."),
     contact_email: z.string().email().optional(),
     demo_account_required: z.boolean().optional(),
     demo_account_name: z.string().optional(),
@@ -371,6 +438,18 @@ export const setReviewDetails = defineTool({
       notes: args.notes,
     };
     if (Object.values(changes).every((value) => value === undefined)) throw new UserError("Pass at least one field to change.");
+    if (existing) {
+      // Apple rejects any edit to existing review details unless the full contact is set.
+      const contact = { ...existing.attributes, ...changes } as Record<string, unknown>;
+      const missing = ["contactFirstName", "contactLastName", "contactEmail", "contactPhone"].filter((k) => !contact[k]);
+      if (missing.length) {
+        throw new UserError(
+          `App Store Connect only accepts changes to App Review details once the contact is complete. Also pass: ${missing
+            .map((k) => k.replace("contact", "contact_").replace(/([a-z])([A-Z])/g, "$1_$2").toLowerCase())
+            .join(", ")} (phone with + and the country code).`,
+        );
+      }
+    }
     const log = new StepLog();
     await upsert(ctx, log, {
       type: "appStoreReviewDetails",
@@ -387,12 +466,15 @@ export const updateAgeRating = defineTool({
   name: "update_age_rating",
   title: "Update age rating",
   description:
-    "Changes answers in the age rating questionnaire of the app info being prepared. Pass only the answers to change, using Apple's attribute names " +
-    '(see get_listing), e.g. {"violenceCartoonOrFantasy": "INFREQUENT_OR_MILD", "gambling": false}. Values are NONE, INFREQUENT_OR_MILD, FREQUENT_OR_INTENSE, or true/false.',
+    "Answers the age rating questionnaire of the app info being prepared. Pass the answers to change, using Apple's attribute names, " +
+    'e.g. {"violenceCartoonOrFantasy": "INFREQUENT_OR_MILD", "gambling": false}. Content questions take NONE, INFREQUENT_OR_MILD or FREQUENT_OR_INTENSE: ' +
+    `${AGE_RATING_LEVEL_QUESTIONS.join(", ")}. Yes/no questions take true/false: ${AGE_RATING_YES_NO_QUESTIONS.join(", ")}, plus messagingAndChat, socialMedia. ` +
+    "Apple needs every question answered before it accepts any change; fill_unanswered: true answers the rest NONE/false. Confirm those answers with the user.",
   kind: "write",
   input: {
     app: appInput,
-    answers: z.record(z.union([z.string(), z.boolean(), z.null()])),
+    answers: z.record(z.union([z.string(), z.boolean(), z.null()])).default({}),
+    fill_unanswered: z.boolean().default(false).describe("Answer every question that has no answer yet with NONE or false."),
   },
   async run(args, ctx) {
     const ref = await resolveApp(ctx, args.app);
@@ -400,8 +482,20 @@ export const updateAgeRating = defineTool({
     if (!editable) throw new UserError("The age rating can only change while a new version is being prepared. Create one with prepare_version.");
     const declaration = included.one<AgeRatingDeclarationAttributes>(info, "ageRatingDeclaration", "ageRatingDeclarations");
     if (!declaration) throw new UserError("Couldn't find the age rating declaration for the app info being prepared.");
+    const changes: Attributes = { ...args.answers };
+    if (args.fill_unanswered) {
+      for (const q of AGE_RATING_LEVEL_QUESTIONS) if (declaration.attributes?.[q] == null && changes[q] === undefined) changes[q] = "NONE";
+      for (const q of AGE_RATING_YES_NO_QUESTIONS) if (declaration.attributes?.[q] == null && changes[q] === undefined) changes[q] = false;
+    }
+    const stillUnanswered = unansweredAgeQuestions({ ...declaration.attributes, ...changes });
+    if (stillUnanswered.length) {
+      throw new UserError(
+        `Apple needs every age rating question answered before it accepts changes. Still unanswered: ${stillUnanswered.join(", ")}. ` +
+          "Pass answers for them, or fill_unanswered: true to answer the rest NONE/false (confirm with the user that's accurate).",
+      );
+    }
     const log = new StepLog();
-    await upsert(ctx, log, { type: "ageRatingDeclarations", label: "Age rating", existing: declaration as Resource<Attributes>, changes: args.answers });
+    await upsert(ctx, log, { type: "ageRatingDeclarations", label: "Age rating", existing: declaration as Resource<Attributes>, changes });
     return [ref.name, STEP_LEGEND, log.toString()].join("\n");
   },
 });

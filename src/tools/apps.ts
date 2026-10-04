@@ -75,7 +75,9 @@ export const getAppStatus = defineTool({
       out.push(`- ${buildSummary(info)}`);
     }
 
-    const pending = (uploads?.data ?? []).filter((u) => u.attributes?.state?.state && u.attributes.state.state !== "COMPLETE");
+    // Only uploads Apple is actually working on, or that failed. AWAITING_UPLOAD records are mostly
+    // placeholders Xcode creates when it exports an archive, and never change.
+    const pending = (uploads?.data ?? []).filter((u) => ["PROCESSING", "FAILED"].includes(u.attributes?.state?.state ?? ""));
     if (pending.length) {
       out.push("", "Uploads Apple is still processing:");
       for (const u of pending) {

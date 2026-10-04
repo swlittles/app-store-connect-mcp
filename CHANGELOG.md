@@ -9,3 +9,11 @@ First release.
 - `asc_request` escape hatch: GET only unless `ASC_WRITE=1`; DELETE needs `confirm: true`.
 - Read-only by default; destructive tools dry-run by default.
 - Types generated from App Store Connect API spec 4.5.
+- Tested against a real App Store Connect account, which turned up these fixes:
+  - Xcode's placeholder build uploads are ignored.
+  - What's New on a first version gets a clear explanation.
+  - The age rating questionnaire is answered all at once (`fill_unanswered`).
+  - Editing App Review details needs a complete contact.
+  - Fields are cleared with `null`.
+  - Tester lists use a single relationship filter.
+  - Rejected screenshot uploads are removed and reported as errors.

@@ -185,6 +185,9 @@ export async function describeMissingBuild(ctx: ToolContext, appId: string, q: B
         const state = upload.attributes?.state;
         const errors = (state?.errors ?? []).map((e) => `${e.code ?? "?"}: ${e.description ?? ""}`.trim());
         if (state?.state === "FAILED") return `Build ${build} failed Apple's upload processing: ${errors.join("; ") || "no detail given"}.`;
+        if (state?.state === "AWAITING_UPLOAD") {
+          return `Build ${build} was registered ${when(upload.attributes?.createdDate)}, but no file has arrived yet. Xcode registers builds when it exports them, so it may never have been uploaded. Upload it with upload_build, or wait if an upload is running.`;
+        }
         return `Build ${build} was uploaded ${when(upload.attributes?.uploadedDate ?? upload.attributes?.createdDate)} and Apple is still processing it (upload state ${state?.state ?? "?"}). Try again in a few minutes, or call get_build with wait_minutes.`;
       }
     } catch {

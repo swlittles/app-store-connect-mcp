@@ -293,15 +293,19 @@ async function applySync(
     const failed = value.filter((s) => shotState(s) === "FAILED");
     if (failed.length) {
       for (const s of failed) {
-        const why = (s.attributes?.assetDeliveryState?.errors ?? []).map((e) => `${e.code}: ${e.description}`).join("; ");
+        const why = (s.attributes?.assetDeliveryState?.errors ?? []).map((e) => (e.description && e.description !== e.code ? `${e.code}: ${e.description}` : e.code)).join("; ");
         log.fail(`Apple couldn't process ${s.attributes?.fileName} (${s.id}): ${why || "no detail"}`);
+        // A rejected upload is useless and takes one of the 10 slots, so remove it.
+        await ctx.asc.deleteIfExists(`/v1/appScreenshots/${s.id}`);
+        log.done(`Removed the rejected upload ${s.attributes?.fileName}`);
       }
       log.info(
         early.length
           ? "Stopped before reordering or deleting anything else. Fix the image (usually its size), then run the same call again."
           : "Stopped before reordering or deleting anything, so the live listing is unchanged. Fix the image (usually its size), then run the same call again.",
       );
-      return { finished: false };
+      // An error result, so an agent can't mistake this for success.
+      throw new UserError(`${STEP_LEGEND}\n${log.toString()}`);
     }
     if (!done) {
       log.warn(`Apple is still processing ${plural(value.filter((s) => shotState(s) !== "COMPLETE").length, "image")}. Run the same call again to finish (uploads won't repeat).`);

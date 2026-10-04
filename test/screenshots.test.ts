@@ -98,7 +98,12 @@ describe("replace_screenshot", () => {
     const { text } = await h.call("replace_screenshot", { ...base, position: 1, file, dry_run: false });
     expect(text).toContain("✗ Apple couldn't process bad.png");
     expect(text).toContain("IMAGE_INCORRECT_DIMENSIONS");
-    expect(h.fake.writes().some((r) => r.method === "DELETE")).toBe(false);
+    // Only the rejected upload itself is removed; nothing in the listing is touched.
+    const deletes = h.fake.writes().filter((r) => r.method === "DELETE").map((r) => r.path);
+    expect(deletes).toHaveLength(1);
+    expect(deletes[0]).not.toMatch(/shot-\d$/);
+    expect(text).toContain("✓ Removed the rejected upload bad.png");
+    expect(h.fake.all("appScreenshots").map((s) => s.id).sort()).toEqual(["shot-1", "shot-2", "shot-3"]);
     expect(h.fake.writes().some((r) => r.path.endsWith("/relationships/appScreenshots"))).toBe(false);
     expect(fileNames(h.fake).slice(0, 3)).toEqual(["old-1.png", "old-2.png", "old-3.png"]);
   });

@@ -8,7 +8,7 @@ Apple doesn't ship an MCP server for App Store Connect. Xcode's `xcrun mcpbridge
 - **Safe by default.** The server is read-only until you set `ASC_WRITE=1`. Anything destructive is a dry run until the agent confirms it, and the docs recommend a least-privilege API key.
 - **Reliable.** Every step checks the current state first, so you can re-run a tool after a timeout or a dropped connection. Tools poll Apple's asynchronous processing, back off on rate limits, and return errors that say what to do next.
 
-> **Status: 0.1.** Every tool is tested against an in-memory App Store Connect that checks each request against Apple's OpenAPI spec (v4.5). The live test suite against a real account is opt-in (see [Development](#development)). Please report anything that behaves differently against the real API.
+> **Status: 0.1.** Every tool is tested against an in-memory App Store Connect that checks each request against Apple's OpenAPI spec (v4.5). The workflows have also been run against a real App Store Connect account on a sandbox app: build upload through the API, distribution, groups and testers, listing edits, the whole screenshot lifecycle (including a full set of 10 and an image Apple rejects), version prep and the review pre-flight. Submitting to App Review and Beta App Review was only dry-run, because those send the app to Apple. Please report anything that behaves differently for you.
 
 ## Quick start
 
@@ -180,7 +180,20 @@ The `ExportOptions.plist` needs `method` set to `app-store-connect` and `destina
 - `method: "api"` (the default) uses App Store Connect's build upload API (`buildUploads` and `buildUploadFiles`, added in API 4.1). It needs no Xcode, so it works on Linux CI too.
 - `method: "altool"` runs `xcrun altool --upload-app` with the same API key, on a Mac.
 
+`xcodebuild -exportArchive` registers a placeholder upload with App Store Connect even when it only exports. `upload_build` recognizes these placeholders and ignores them.
+
 Every upload needs a new, higher `CFBundleVersion`. A timestamp such as `YYYYMMDDHHMM` works well. Add `ITSAppUsesNonExemptEncryption = NO` to Info.plist if it applies to your app, and TestFlight will never ask about export compliance.
+
+## Apple's rules worth knowing
+
+These came up when testing against the real API. The tools handle each one, but they explain why a change is refused:
+
+- **What's New** can't be set on an app's first version.
+- The **age rating questionnaire** starts with every answer empty, and Apple won't accept any change until all 21 questions are answered. `update_age_rating` with `fill_unanswered: true` answers the rest NONE/false. Check those answers with whoever owns the app.
+- Once **App Review details** exist, every edit needs the full contact: first and last name, email, and phone with `+` and the country code.
+- Fields are cleared with `null`, not an empty string. Pass `""` to the tools, and they send `null`.
+- Apple reports a wrong-size screenshot only as `ASSET_FAILED`, so the tools check image sizes before uploading. They also delete the rejected upload, so it doesn't take up one of the set's 10 slots.
+- External testers aren't emailed until a build passes Beta App Review.
 
 ## What the API can't do
 
@@ -209,6 +222,12 @@ npm run build          # dist/index.js
 Only the schemas listed in `scripts/spec-schemas.json` (and what they reference) are generated.
 
 **Tests** run against `test/helpers/fake-asc.ts`, an in-memory App Store Connect. It supports JSON:API includes, filters, sorting, pagination, relationship endpoints and fault injection (connection resets, 409s, 429s). It also checks every request's path, method and query parameters against the pinned spec, so a typo in an endpoint fails a test. All fixture data is synthetic.
+
+`scripts/call-tool.mjs` calls one tool on the built server over stdio, which is handy against a real account:
+
+```sh
+npm run build && node scripts/call-tool.mjs get_app_status '{"app": "com.example.app"}'
+```
 
 **Live tests** are opt-in. They run against a real account, ideally a sandbox app:
 
