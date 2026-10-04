@@ -148,7 +148,7 @@ function count(text: string | undefined | null, limit: number): string {
 }
 
 /** The app info record to read or edit: the one being prepared if there is one, else the live one. */
-async function resolveAppInfo(ctx: ToolContext, appId: string) {
+export async function resolveAppInfo(ctx: ToolContext, appId: string) {
   const doc = await ctx.asc.get<Resource<AppInfoAttributes>[]>(`/v1/apps/${appId}/appInfos`, {
     include: "appInfoLocalizations,primaryCategory,primarySubcategoryOne,primarySubcategoryTwo,secondaryCategory,ageRatingDeclaration",
     "limit[appInfoLocalizations]": 50,

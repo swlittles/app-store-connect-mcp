@@ -38,31 +38,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     );
   }
 
-  let pem: string;
-  let source: string;
-  if (env.ASC_KEY) {
-    source = "ASC_KEY";
-    // Allow the PEM to be passed with literal "\n" sequences, as many MCP client configs require.
-    pem = env.ASC_KEY.includes("\\n") ? env.ASC_KEY.replace(/\\n/g, "\n") : env.ASC_KEY;
-  } else {
-    source = "ASC_KEY_PATH";
-    const path = env.ASC_KEY_PATH!.replace(/^~(?=$|\/)/, homedir());
-    try {
-      pem = readFileSync(path, "utf8");
-    } catch (error) {
-      throw new ConfigError(`Couldn't read ASC_KEY_PATH (${path}): ${(error as NodeJS.ErrnoException).code ?? "read error"}`);
-    }
-  }
-
-  let privateKey: KeyObject;
-  try {
-    privateKey = createPrivateKey({ key: pem.trim(), format: "pem" });
-  } catch {
-    throw new ConfigError(`${source} isn't a valid PEM private key. Use the .p8 file App Store Connect gave you.`);
-  }
-  if (privateKey.asymmetricKeyType !== "ec") {
-    throw new ConfigError(`${source} must be an EC (P-256) key, which is what App Store Connect .p8 files contain.`);
-  }
+  const privateKey = readEcKey(env, "ASC_KEY", "ASC_KEY_PATH", "the .p8 file App Store Connect gave you");
 
   return {
     keyId: keyId!,
@@ -76,6 +52,39 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   };
 }
 
-function isTruthy(value: string | undefined): boolean {
+/**
+ * Reads an EC private key from an inline PEM variable or a path variable. Errors name the variable,
+ * never its contents.
+ */
+export function readEcKey(env: NodeJS.ProcessEnv, inlineVar: string, pathVar: string, hint: string): KeyObject {
+  let pem: string;
+  let source: string;
+  const inline = env[inlineVar];
+  if (inline) {
+    source = inlineVar;
+    // Allow the PEM to be passed with literal "\n" sequences, as many MCP client configs require.
+    pem = inline.includes("\\n") ? inline.replace(/\\n/g, "\n") : inline;
+  } else {
+    source = pathVar;
+    const path = (env[pathVar] ?? "").replace(/^~(?=$|\/)/, homedir());
+    try {
+      pem = readFileSync(path, "utf8");
+    } catch (error) {
+      throw new ConfigError(`Couldn't read ${pathVar} (${path}): ${(error as NodeJS.ErrnoException).code ?? "read error"}`);
+    }
+  }
+  let key: KeyObject;
+  try {
+    key = createPrivateKey({ key: pem.trim(), format: "pem" });
+  } catch {
+    throw new ConfigError(`${source} isn't a valid PEM private key. Use ${hint}.`);
+  }
+  if (key.asymmetricKeyType !== "ec") {
+    throw new ConfigError(`${source} must be an EC (P-256) key, which is what ${hint} contains.`);
+  }
+  return key;
+}
+
+export function isTruthy(value: string | undefined): boolean {
   return value !== undefined && ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
 }

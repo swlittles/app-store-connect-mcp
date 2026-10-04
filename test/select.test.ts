@@ -2,7 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it } from "vitest";
 import { createServer, runtimeFromEnv } from "../src/server.js";
-import { TOOLS } from "../src/tools/index.js";
+import { ADS_TOOLS, TOOLS } from "../src/tools/index.js";
 import { AREA_GROUPS, selectTools, toolGroups } from "../src/tools/select.js";
 import { seedApp } from "./helpers/fixtures.js";
 import { makeHarness } from "./helpers/harness.js";
@@ -10,11 +10,17 @@ import { makeHarness } from "./helpers/harness.js";
 const names = (env: NodeJS.ProcessEnv) => selectTools(env, TOOLS).tools.map((t) => t.name);
 
 describe("tool groups", () => {
-  it("put every tool in exactly one of read or an area group", () => {
+  it("put every App Store Connect tool in exactly one of read or an area group", () => {
     const groups = toolGroups(TOOLS);
-    const placed = [...groups.read!, ...Object.values(AREA_GROUPS).flat()];
+    const areas = Object.entries(AREA_GROUPS).filter(([k]) => k !== "ads").flatMap(([, v]) => v);
+    const placed = [...groups.read!, ...areas];
     expect(placed.sort()).toEqual(TOOLS.map((t) => t.name).sort());
     expect(new Set(placed).size).toBe(placed.length);
+  });
+
+  it("put every Apple Ads tool in the ads group, and they're all read-only", () => {
+    expect([...AREA_GROUPS.ads!].sort()).toEqual(ADS_TOOLS.map((t) => t.name).sort());
+    expect(ADS_TOOLS.every((t) => t.kind === "read" && t.requires === "ads")).toBe(true);
   });
 });
 

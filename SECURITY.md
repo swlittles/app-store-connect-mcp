@@ -11,6 +11,7 @@ Please report security problems privately through [GitHub's security advisories]
 - Tokens are only sent to `https://api.appstoreconnect.apple.com`, which is hard-coded. Pagination links that point anywhere else are refused. File uploads go to the presigned URLs Apple returns, without the token.
 - `upload_build` with `method: "altool"` writes a temporary copy of the key, readable only by you, for `xcrun altool`, and deletes it when the upload finishes.
 - The App Review demo password is never echoed back in tool output.
+- The optional Apple Ads key (`ADS_KEY_PATH` or `ADS_KEY`) is only used to sign short-lived client secrets. These are exchanged for access tokens at `https://appleid.apple.com`, and the tokens are only sent to `https://api.ads.apple.com`. Both hosts are hard-coded. Neither the key nor tokens appear in output or errors. Use the **API Account Read Only** role: the server only reads from Apple Ads.
 
 ## Automatic updates
 

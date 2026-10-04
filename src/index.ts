@@ -22,6 +22,9 @@ Environment:
   ASC_DISABLED_TOOLS  Turn off these tools or groups, e.g. "destructive,raw"
   ASC_AUTO_UPDATE=0   Turn off automatic updates from GitHub (on by default)
   ASC_UPDATE_CHANNEL  "release" (default: the latest GitHub release) or "main"
+
+Optional Apple Ads keyword research (docs/apple-ads-key.md):
+  ADS_CLIENT_ID, ADS_TEAM_ID, ADS_KEY_ID, ADS_KEY_PATH (or ADS_KEY), ADS_AD_ACCOUNT_ID
                       Groups: all, read, destructive, testflight, listing, screenshots,
                       release, subscriptions, reviews, raw
 

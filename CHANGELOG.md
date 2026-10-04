@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Optional Apple Ads keyword research through the Apple Ads Platform API: `ads_status`, `keyword_popularity`, `search_term_trends` and `keyword_suggestions`.
+  - All read-only. They're offered when the `ADS_*` variables are set, and work without App Store Connect credentials.
+  - `keyword_popularity` with `app` scores your keyword field and flags keywords that repeat words already in your name or subtitle.
+  - OAuth tokens are cached and refreshed. Rate limits are respected through `Retry-After` and `RateLimit-*`. The ad account is found automatically.
+  - Setup guide: `docs/apple-ads-key.md`.
+
 - Fix: `update_age_rating` with `fill_unanswered` now also answers `messagingAndChat`, which Apple requires. Before this, Apple rejected the update with HTTP 409. The submission pre-flight counts it too (22 required questions).
 
 ## 0.3.0

@@ -104,11 +104,25 @@ Then ask for things in plain language:
 | `ASC_TOOLS` | Only offer these tools or groups. Default: all. See [Turning tools off](#turning-tools-off). |
 | `ASC_DISABLED_TOOLS` | Never offer these tools or groups. |
 | `ASC_AUTO_UPDATE` | `0` turns off automatic updates. On by default. |
+| `ADS_CLIENT_ID`, `ADS_TEAM_ID`, `ADS_KEY_ID`, `ADS_KEY_PATH` (or `ADS_KEY`), `ADS_AD_ACCOUNT_ID` | Optional Apple Ads credentials for keyword research. See [Keyword research with Apple Ads](#keyword-research-with-apple-ads-optional). |
 | `ASC_UPDATE_CHANNEL` | `release` (default) follows GitHub releases; `main` follows the newest code on the main branch, including unreleased changes. |
 
 The key is only used to sign tokens. The server never logs it or puts it in tool output or error messages, and it only sends tokens to `api.appstoreconnect.apple.com`. That host is fixed and can't be overridden.
 
 If the configuration is incomplete, the server still starts, and every tool returns an error explaining what's missing. Your client won't just show "failed to connect".
+
+## Keyword research with Apple Ads (optional)
+
+To help pick the words for your 100-character keyword field, the server can read Apple's App Store search popularity data through the [Apple Ads Platform API](https://developer.apple.com/documentation/apple-ads-platform-api). It only reads: nothing here creates campaigns or spends money. Set it up with [docs/apple-ads-key.md](docs/apple-ads-key.md). The tools appear once the `ADS_*` variables are set, and they work without `ASC_WRITE`.
+
+| Tool | What it does |
+| --- | --- |
+| `ads_status` | Checks the connection: org, ad accounts, roles, and the account the tools use. |
+| `keyword_popularity` | Apple's 0-100 popularity for phrases you name, or for phrases containing some text. With `app`, it scores your current keyword field and flags keywords that repeat words already in your name or subtitle, which Apple indexes anyway. |
+| `search_term_trends` | The most-searched terms in a genre and country, weekly or monthly, with rank and popularity. Only covers roughly the top 500 terms per genre and country. |
+| `keyword_suggestions` | Apple's keyword ideas for an app, most popular first. Generally needs an app that's live on the App Store. |
+
+They're in the `ads` group, so `ASC_DISABLED_TOOLS=ads` hides them.
 
 ## Updates
 
@@ -146,6 +160,7 @@ Both take tool names and group names, separated by commas or spaces. Turned-off 
 | `subscriptions` | `remove_intro_offers`, `add_free_trial` |
 | `reviews` | `reply_to_review` |
 | `raw` | `asc_request` |
+| `ads` | `ads_status`, `keyword_popularity`, `search_term_trends`, `keyword_suggestions` (offered only when Apple Ads is configured; also in `read`) |
 | `destructive` | Everything that deletes or can't be taken back: `remove_testers`, `upload_screenshots`, `replace_screenshot`, `delete_screenshots`, `submit_for_review`, `cancel_review_submission`, `remove_intro_offers`, `reply_to_review`, `asc_request` |
 | `all` | Everything |
 

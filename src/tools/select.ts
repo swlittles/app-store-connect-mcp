@@ -13,6 +13,7 @@ export const AREA_GROUPS: Record<string, readonly string[]> = {
   subscriptions: ["remove_intro_offers", "add_free_trial"],
   reviews: ["reply_to_review"],
   raw: ["asc_request"],
+  ads: ["ads_status", "keyword_popularity", "search_term_trends", "keyword_suggestions"],
 };
 
 export function toolGroups(tools: readonly AnyTool[]): Record<string, string[]> {

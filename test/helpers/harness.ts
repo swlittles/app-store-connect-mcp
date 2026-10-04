@@ -5,10 +5,12 @@ import { join } from "node:path";
 import { z } from "zod";
 import { TokenProvider } from "../../src/asc/auth.js";
 import { AscClient } from "../../src/asc/client.js";
-import type { Config } from "../../src/config.js";
+import { AdsClient } from "../../src/ads/client.js";
+import { ConfigError, type Config } from "../../src/config.js";
 import { inputShape, invoke, type Runtime } from "../../src/tools/framework.js";
-import { TOOLS } from "../../src/tools/index.js";
+import { ALL_TOOLS } from "../../src/tools/index.js";
 import { clearLookupCache } from "../../src/tools/lookup.js";
+import { FakeAds } from "./fake-ads.js";
 import { FakeAsc } from "./fake-asc.js";
 
 export const APP_ID = "1000000001";
@@ -22,10 +24,19 @@ export interface Harness {
   config: Config;
   clock: { now: number; onTick: ((now: number) => void)[] };
   runtime: Runtime;
+  ads?: { fake: FakeAds; client: AdsClient; sleeps: number[] };
   call(name: string, args?: Record<string, unknown>): Promise<{ text: string; isError: boolean }>;
 }
 
-export function makeHarness(options: { write?: boolean } = {}): Harness {
+export interface HarnessOptions {
+  write?: boolean;
+  /** Configure Apple Ads against a fake Ads API. */
+  ads?: boolean | { adAccountId?: string };
+  /** Simulate App Store Connect not being configured. */
+  noAsc?: boolean;
+}
+
+export function makeHarness(options: HarnessOptions = {}): Harness {
   clearLookupCache();
   const fake = new FakeAsc();
   activeFakes.push(fake);
@@ -51,15 +62,49 @@ export function makeHarness(options: { write?: boolean } = {}): Harness {
     sleep,
     random: () => 0.5,
   });
-  const runtime: Runtime = { services: () => ({ asc, config }), sleep, now: () => clock.now };
+  let ads: { fake: FakeAds; client: AdsClient; sleeps: number[] } | undefined;
+  if (options.ads) {
+    const pair = generateKeyPairSync("ec", { namedCurve: "P-256" });
+    const fakeAds = new FakeAds(pair.publicKey);
+    const sleeps: number[] = [];
+    const client = new AdsClient({
+      config: {
+        clientId: "SEARCHADS.client-0000",
+        teamId: "SEARCHADS.team-0000",
+        keyId: "00000000-key",
+        privateKey: pair.privateKey,
+        adAccountId: typeof options.ads === "object" ? options.ads.adAccountId : undefined,
+      },
+      fetch: fakeAds.fetch,
+      now: () => clock.now,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        await sleep(ms);
+      },
+    });
+    ads = { fake: fakeAds, client, sleeps };
+  }
+  const runtime: Runtime = {
+    services: () => {
+      if (options.noAsc) throw new ConfigError("App Store Connect isn't configured: set ASC_KEY_ID and ASC_KEY_PATH (or ASC_KEY).");
+      return { asc, config };
+    },
+    ads: () => {
+      if (!ads) throw new ConfigError("Apple Ads isn't configured.");
+      return ads.client;
+    },
+    sleep,
+    now: () => clock.now,
+  };
   return {
     fake,
     asc,
     config,
     clock,
     runtime,
+    ads,
     async call(name, args = {}) {
-      const tool = TOOLS.find((t) => t.name === name);
+      const tool = ALL_TOOLS.find((t) => t.name === name);
       if (!tool) throw new Error(`No tool ${name}`);
       // Validate and apply defaults the way the MCP SDK does.
       const parsed = z.object(inputShape(tool)).strict().parse(args);

@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z, type ZodRawShape } from "zod";
+import { AdsApiError, AdsSetupError, type AdsClient } from "../ads/client.js";
 import { AscApiError, AscNetworkError, type AscClient } from "../asc/client.js";
 import { ConfigError, type Config } from "../config.js";
 
@@ -20,11 +21,15 @@ export interface Services {
 export interface Runtime {
   /** Returns the API client and config, or throws ConfigError if the environment is incomplete. */
   services(): Services;
+  /** The Apple Ads client, or throws ConfigError if Apple Ads isn't (fully) configured. */
+  ads?(): AdsClient;
   sleep(ms: number): Promise<void>;
   now(): number;
 }
 
 export interface ToolContext extends Services {
+  /** Apple Ads client; only available to tools with requires: "ads". */
+  ads: AdsClient;
   signal: AbortSignal;
   sleep(ms: number): Promise<void>;
   now(): number;
@@ -48,6 +53,8 @@ export interface ToolDefinition<Shape extends ZodRawShape> {
   idempotent?: boolean;
   /** A read tool that can also write and gates that itself (asc_request). */
   gatesOwnWrites?: boolean;
+  /** Which API the tool needs. Apple Ads tools work without App Store Connect credentials. */
+  requires?: "asc" | "ads";
   input: Shape;
   run(args: z.objectOutputType<Shape, z.ZodTypeAny>, ctx: ToolContext): Promise<string>;
 }
@@ -120,22 +127,31 @@ export async function invoke(
   extra: { signal?: AbortSignal; progress?: ToolContext["progress"] } = {},
 ): Promise<CallToolResult> {
   try {
-    const services = runtime.services();
+    const needsAds = tool.requires === "ads";
+    // Ads tools don't need App Store Connect configured; they only touch it if they use ctx.asc.
+    const services = needsAds ? undefined : runtime.services();
+    const ads = needsAds ? adsClient(runtime) : undefined;
     const dryRun = tool.kind === "read" ? false : ((args.dry_run as boolean | undefined) ?? tool.kind === "destructive");
-    if (tool.kind !== "read" && !dryRun && !services.config.write) {
+    if (tool.kind !== "read" && !dryRun && !services!.config.write) {
       throw new UserError(
         `${tool.name} changes App Store Connect, and this server is read-only. ` +
           "Ask the user to restart it with ASC_WRITE=1 to allow changes. You can still call it with dry_run: true to see the plan.",
       );
     }
-    const ctx: ToolContext = {
-      ...services,
-      signal: extra.signal ?? new AbortController().signal,
-      sleep: runtime.sleep,
-      now: runtime.now,
-      progress: extra.progress ?? (async () => {}),
-      dryRun,
-    };
+    const ctx = Object.defineProperties(
+      {
+        signal: extra.signal ?? new AbortController().signal,
+        sleep: runtime.sleep,
+        now: runtime.now,
+        progress: extra.progress ?? (async () => {}),
+        dryRun,
+      },
+      {
+        asc: { get: () => (services ?? runtime.services()).asc },
+        config: { get: () => (services ?? runtime.services()).config },
+        ads: { get: () => ads ?? adsClient(runtime) },
+      },
+    ) as ToolContext;
     const text = await tool.run(args, ctx);
     return { content: [{ type: "text", text: dryRun ? `DRY RUN: nothing was changed.\n${text}` : text }] };
   } catch (error) {
@@ -143,8 +159,22 @@ export async function invoke(
   }
 }
 
+function adsClient(runtime: Runtime): AdsClient {
+  if (!runtime.ads) {
+    throw new ConfigError("Apple Ads isn't configured. Set ADS_CLIENT_ID, ADS_TEAM_ID, ADS_KEY_ID and ADS_KEY_PATH; see docs/apple-ads-key.md.");
+  }
+  return runtime.ads();
+}
+
 function errorText(error: unknown): string {
-  if (error instanceof UserError || error instanceof ConfigError || error instanceof AscApiError || error instanceof AscNetworkError) {
+  if (
+    error instanceof UserError ||
+    error instanceof ConfigError ||
+    error instanceof AscApiError ||
+    error instanceof AscNetworkError ||
+    error instanceof AdsApiError ||
+    error instanceof AdsSetupError
+  ) {
     return error.message;
   }
   if (error instanceof Error && error.name === "AbortError") return "Cancelled. Steps already done stay done; re-running continues from there.";

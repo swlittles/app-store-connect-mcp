@@ -1,4 +1,5 @@
-import { sign, type KeyObject } from "node:crypto";
+import type { KeyObject } from "node:crypto";
+import { signEs256Jwt } from "../jwt.js";
 
 /** Apple rejects tokens that live longer than 20 minutes. */
 const TOKEN_LIFETIME_SECONDS = 19 * 60;
@@ -23,18 +24,11 @@ export class TokenProvider {
     if (this.cached && this.cached.expiresAt - REFRESH_MARGIN_SECONDS > now) return this.cached.token;
 
     const exp = now + TOKEN_LIFETIME_SECONDS;
-    const header = { alg: "ES256", kid: this.options.keyId, typ: "JWT" };
     // Team keys identify the issuer; individual keys have no issuer and use sub: "user".
     const payload = this.options.issuerId
       ? { iss: this.options.issuerId, iat: now, exp, aud: "appstoreconnect-v1" }
       : { sub: "user", iat: now, exp, aud: "appstoreconnect-v1" };
-    const signingInput = `${base64url(JSON.stringify(header))}.${base64url(JSON.stringify(payload))}`;
-    // JWS needs the raw r||s signature, not DER.
-    const signature = sign("sha256", Buffer.from(signingInput), {
-      key: this.options.privateKey,
-      dsaEncoding: "ieee-p1363",
-    });
-    const token = `${signingInput}.${signature.toString("base64url")}`;
+    const token = signEs256Jwt({ alg: "ES256", kid: this.options.keyId, typ: "JWT" }, payload, this.options.privateKey);
     this.cached = { token, expiresAt: exp };
     return token;
   }
@@ -45,6 +39,3 @@ export class TokenProvider {
   }
 }
 
-function base64url(text: string): string {
-  return Buffer.from(text).toString("base64url");
-}

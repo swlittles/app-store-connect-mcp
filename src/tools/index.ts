@@ -1,3 +1,4 @@
+import { ADS_TOOLS } from "./ads.js";
 import { ascRequest, getAppStatus, listApps } from "./apps.js";
 import { distributeBuild, getBuild, listBuilds, uploadBuild } from "./builds.js";
 import type { AnyTool } from "./framework.js";
@@ -48,3 +49,9 @@ export const TOOLS: readonly AnyTool[] = [
   // Escape hatch
   ascRequest,
 ];
+
+/** Optional Apple Ads tools, offered when any ADS_* variable is set. */
+export { ADS_TOOLS };
+
+/** Every tool, for validating ASC_TOOLS / ASC_DISABLED_TOOLS names. */
+export const ALL_TOOLS: readonly AnyTool[] = [...TOOLS, ...ADS_TOOLS];
