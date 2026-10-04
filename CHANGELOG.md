@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fix: `update_age_rating` with `fill_unanswered` now also answers `messagingAndChat`, which Apple requires. Before this, Apple rejected the update with HTTP 409. The submission pre-flight counts it too (22 required questions).
+
 ## 0.3.0
 
 - Automatic updates. A cloned install checks GitHub for a new release on start (at most every 30 minutes), installs it in the background, and uses it from the next start.

@@ -61,6 +61,7 @@ export const AGE_RATING_YES_NO_QUESTIONS = [
   "gambling",
   "healthOrWellnessTopics",
   "lootBox",
+  "messagingAndChat",
   "parentalControls",
   "unrestrictedWebAccess",
   "userGeneratedContent",
@@ -468,7 +469,7 @@ export const updateAgeRating = defineTool({
   description:
     "Answers the age rating questionnaire of the app info being prepared. Pass the answers to change, using Apple's attribute names, " +
     'e.g. {"violenceCartoonOrFantasy": "INFREQUENT_OR_MILD", "gambling": false}. Content questions take NONE, INFREQUENT_OR_MILD or FREQUENT_OR_INTENSE: ' +
-    `${AGE_RATING_LEVEL_QUESTIONS.join(", ")}. Yes/no questions take true/false: ${AGE_RATING_YES_NO_QUESTIONS.join(", ")}, plus messagingAndChat, socialMedia. ` +
+    `${AGE_RATING_LEVEL_QUESTIONS.join(", ")}. Yes/no questions take true/false: ${AGE_RATING_YES_NO_QUESTIONS.join(", ")}, plus optional socialMedia. ` +
     "Apple needs every question answered before it accepts any change; fill_unanswered: true answers the rest NONE/false. Confirm those answers with the user.",
   kind: "write",
   input: {

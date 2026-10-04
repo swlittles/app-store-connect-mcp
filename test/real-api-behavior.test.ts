@@ -23,7 +23,7 @@ function freshApp() {
   // Apple rejects partial updates while the questionnaire is unanswered.
   h.fake.afterUpdate.ageRatingDeclarations = (f, req) => {
     const sent = (req.body as { data: { attributes: Record<string, unknown> } }).data.attributes;
-    const missing = Object.keys(NULL_AGE_RATING).filter((k) => k !== "messagingAndChat" && !(k in sent));
+    const missing = Object.keys(NULL_AGE_RATING).filter((k) => !(k in sent));
     if (missing.length) return f.error(409, "ENTITY_ERROR.ATTRIBUTE.REQUIRED", `You must provide a value for the attribute '${missing[0]}' with this request`);
   };
   return h;
@@ -53,10 +53,22 @@ describe("age rating on a fresh app", () => {
     expect(h.fake.get("ageRatingDeclarations", "age-1")!.attributes.violenceRealistic).toBe("NONE");
   });
 
+  it("fill_unanswered with no answers answers messagingAndChat too", async () => {
+    // Seen on two real apps: Apple rejects the PATCH without messagingAndChat (but not socialMedia).
+    const h = freshApp();
+    const { text, isError } = await h.call("update_age_rating", { fill_unanswered: true });
+    expect(isError, text).toBe(false);
+    const patch = h.fake.writes().find((r) => r.method === "PATCH")!;
+    const sent = (patch.body as { data: { attributes: Record<string, unknown> } }).data.attributes;
+    expect(sent.messagingAndChat).toBe(false);
+    expect(Object.keys(sent)).toHaveLength(22);
+    expect(sent).not.toHaveProperty("socialMedia");
+  });
+
   it("blocks submission while the questionnaire is unanswered", async () => {
     const h = freshApp();
     const { text } = await h.call("submit_for_review", {});
-    expect(text).toContain("age rating questionnaire has 21 unanswered questions");
+    expect(text).toContain("age rating questionnaire has 22 unanswered questions");
   });
 });
 
