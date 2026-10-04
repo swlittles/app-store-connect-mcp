@@ -1,0 +1,55 @@
+{
+  "name": "app-store-connect-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for App Store Connect with workflow tools: ship TestFlight builds, manage testers, replace screenshots, edit listings, submit for review. Read-only by default.",
+  "license": "MIT",
+  "author": "swlittles",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/swlittles/app-store-connect-mcp.git"
+  },
+  "homepage": "https://github.com/swlittles/app-store-connect-mcp#readme",
+  "bugs": "https://github.com/swlittles/app-store-connect-mcp/issues",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "app-store-connect",
+    "testflight",
+    "ios",
+    "claude",
+    "cursor",
+    "codex"
+  ],
+  "type": "module",
+  "bin": {
+    "app-store-connect-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md"
+  ],
+  "engines": {
+    "node": ">=20.3"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && chmod +x dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:live": "ASC_LIVE_TEST=1 vitest run test/live",
+    "spec:update": "node scripts/update-spec.mjs",
+    "spec:generate": "node scripts/update-spec.mjs --offline",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "openapi-typescript": "^7.13.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  }
+}

@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+*.p8
+*.pem
+.env
+.env.*
+spec/openapi.oas.json
+test/live/.recordings/
+.DS_Store
