@@ -21,6 +21,7 @@ export interface Harness {
   asc: AscClient;
   config: Config;
   clock: { now: number; onTick: ((now: number) => void)[] };
+  runtime: Runtime;
   call(name: string, args?: Record<string, unknown>): Promise<{ text: string; isError: boolean }>;
 }
 
@@ -56,6 +57,7 @@ export function makeHarness(options: { write?: boolean } = {}): Harness {
     asc,
     config,
     clock,
+    runtime,
     async call(name, args = {}) {
       const tool = TOOLS.find((t) => t.name === name);
       if (!tool) throw new Error(`No tool ${name}`);

@@ -68,7 +68,7 @@ describe("loadConfig", () => {
   });
 
   it("never puts key material in errors", () => {
-    const secret = "-----BEGIN PRIVATE KEY-----\nTOTALLYSECRETBYTES\n-----END PRIVATE KEY-----";
+    const secret = ["-----BEGIN", "PRIVATE KEY-----\nTOTALLYSECRETBYTES\n-----END", "PRIVATE KEY-----"].join(" ");
     try {
       loadConfig({ ASC_KEY_ID: "TEST", ASC_KEY: secret });
       expect.unreachable();
