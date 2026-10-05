@@ -111,13 +111,53 @@ describe("keyword_popularity", () => {
     expect(text).toContain("55  coffee");
     expect(text).not.toContain("55  coffee  (");
   });
+
+  it("collapses extra spaces inside keyword-field terms, like the lookup does", async () => {
+    const h = makeHarness({ ads: true });
+    seedApp(h.fake);
+    seedVersion(h.fake);
+    h.fake.get("appStoreVersionLocalizations", "loc-en")!.attributes.keywords = "chess  puzzle, coffee";
+    h.fake.add("appInfos", "info-1", { state: "PREPARE_FOR_SUBMISSION" }, { app: APP_ID });
+    h.fake.add("appInfoLocalizations", "ail-en", { locale: "en-US", name: "Example  App" }, { appInfo: "info-1" });
+    const { text, isError } = await h.call("keyword_popularity", { app: APP_ID });
+    expect(isError, text).toBe(false);
+    expect(text).toContain(" 61  chess puzzle");
+    expect(text).not.toContain("no data: chess");
+    expect(text).toContain("no data: Example App");
+  });
 });
 
 describe("search_term_trends", () => {
   it("defaults to the last full Sunday-to-Saturday week", () => {
     // 2026-10-01 is a Thursday, so the last full week is Sep 20 (Sun) to Sep 26 (Sat).
     expect(timeRange("weekly", undefined, undefined, Date.parse("2026-10-01T12:00:00Z"))).toEqual({ start: "2026-09-20", end: "2026-09-26", granularity: "WEEKLY_SUN_SAT" });
-    expect(timeRange("monthly", undefined, undefined, Date.parse("2026-10-01T12:00:00Z"))).toEqual({ start: "2026-09-01", end: "2026-09-30", granularity: "MONTHLY" });
+    // September isn't published until Oct 5, so early October defaults to August.
+    expect(timeRange("monthly", undefined, undefined, Date.parse("2026-10-01T12:00:00Z"))).toEqual({ start: "2026-08-01", end: "2026-08-31", granularity: "MONTHLY" });
+  });
+
+  it("only defaults to weeks and months Apple has published", () => {
+    const week = (now: string) => timeRange("weekly", undefined, undefined, Date.parse(now));
+    const month = (now: string) => timeRange("monthly", undefined, undefined, Date.parse(now));
+    // The week of Sep 27 - Oct 3 is published on Monday Oct 5 at 07:00 UTC.
+    expect(week("2026-10-04T12:00:00Z")).toMatchObject({ start: "2026-09-20", end: "2026-09-26" }); // Sunday
+    expect(week("2026-10-05T06:00:00Z")).toMatchObject({ start: "2026-09-20", end: "2026-09-26" }); // Monday, before 07:00
+    expect(week("2026-10-05T08:00:00Z")).toMatchObject({ start: "2026-09-27", end: "2026-10-03" }); // Monday, after 07:00
+    expect(week("2026-10-10T23:00:00Z")).toMatchObject({ start: "2026-09-27", end: "2026-10-03" }); // Saturday
+    expect(month("2026-10-05T23:00:00Z")).toMatchObject({ start: "2026-08-01", end: "2026-08-31" });
+    expect(month("2026-10-06T00:00:00Z")).toMatchObject({ start: "2026-09-01", end: "2026-09-30" });
+    expect(month("2027-01-03T12:00:00Z")).toMatchObject({ start: "2026-11-01", end: "2026-11-30" });
+  });
+
+  it("rejects dates that don't exist instead of rolling them over", async () => {
+    // 2026-02-29 would roll over to Sunday Mar 1; 2026-13-01 used to throw a RangeError.
+    expect(() => timeRange("weekly", "2026-02-29", undefined, 0)).toThrow(/2026-02-29 isn't a valid date/);
+    expect(() => timeRange("monthly", "2026-13-01", undefined, 0)).toThrow(/2026-13-01 isn't a valid date/);
+    expect(() => timeRange("weekly", "2026-03-01", "2026-03-32", 0)).toThrow(/2026-03-32 isn't a valid date/);
+    const h = makeHarness({ ads: true });
+    const { text, isError } = await h.call("search_term_trends", { genre: "GAMES", granularity: "monthly", start: "2026-13-01" });
+    expect(isError).toBe(true);
+    expect(text).toContain("isn't a valid date");
+    expect(text).not.toContain("Unexpected");
   });
 
   it("returns ranked terms and explains the top-500 limit when empty", async () => {
@@ -128,6 +168,17 @@ describe("search_term_trends", () => {
     expect(text).toMatch(/12\s+70\s+88\s+4\s+chess/);
     const body = h.ads!.fake.queries("/v1/insights/apps/search-term-popularity/query")[0]!.body as { filters: { field: string; operator: string }[] };
     expect(body.filters).toContainEqual({ field: "searchTerm", operator: "CONTAINS", value: "chess" });
+  });
+
+  it("says a recent range may not be published yet when there are no terms", async () => {
+    const h = makeHarness({ ads: true });
+    h.ads!.fake.fail(/search-term-popularity/, 200, { times: 2, body: { result: { rows: [] } } });
+    const recent = await h.call("search_term_trends", { genre: "GAMES" });
+    expect(recent.text).toContain("may not be out yet");
+    expect(recent.text).toContain("top 500 terms");
+    const old = await h.call("search_term_trends", { genre: "GAMES", start: "2026-08-02" });
+    expect(old.text).not.toContain("may not be out yet");
+    expect(old.text).toContain("top 500 terms");
   });
 
   it("rejects a weekly range that doesn't start on Sunday", async () => {
@@ -160,6 +211,17 @@ describe("reliability and safety", () => {
     const { isError } = await h.call("keyword_popularity", { phrases: ["chess"] });
     expect(isError).toBe(false);
     expect(h.ads!.sleeps).toContain(7000);
+  });
+
+  it("waits for RateLimit-Reset only after a 429, and backs off after a 5xx", async () => {
+    // The fake sends RateLimit-Reset: 30 on every response, as Apple does.
+    const h = makeHarness({ ads: true });
+    h.ads!.fake.fail(/suggestions\/phrases/, 503);
+    expect((await h.call("keyword_popularity", { phrases: ["chess"] })).isError).toBe(false);
+    expect(h.ads!.sleeps).toEqual([2000]);
+    h.ads!.fake.fail(/suggestions\/phrases/, 429);
+    expect((await h.call("keyword_popularity", { phrases: ["chess"] })).isError).toBe(false);
+    expect(h.ads!.sleeps).toEqual([2000, 30_000]);
   });
 
   it("works in read-only mode and without App Store Connect", async () => {

@@ -18,13 +18,23 @@ type Offer = Resource<SubscriptionIntroductoryOfferAttributes>;
 
 const subscriptionInput = z.string().describe("Subscription ID or product ID (e.g. com.example.app.yearly).");
 
+/** Apple's maximum for limit[subscriptions] on the groups request. */
+const INCLUDED_SUBSCRIPTIONS = 50;
+
 async function listSubscriptions(ctx: ToolContext, app: AppRef) {
   const doc = await ctx.asc.getAll<SubscriptionGroupAttributes>(`/v1/apps/${app.id}/subscriptionGroups`, {
     include: "subscriptions",
-    "limit[subscriptions]": 50,
+    "limit[subscriptions]": INCLUDED_SUBSCRIPTIONS,
   });
   const included = new Included(doc.included);
-  return doc.data.map((group) => ({ group, subscriptions: included.many<SubscriptionAttributes>(group, "subscriptions", "subscriptions") }));
+  return Promise.all(
+    doc.data.map(async (group) => {
+      const subscriptions = included.many<SubscriptionAttributes>(group, "subscriptions", "subscriptions");
+      // A full include may be cut short; page the group's own list for the rest.
+      if (subscriptions.length < INCLUDED_SUBSCRIPTIONS) return { group, subscriptions };
+      return { group, subscriptions: (await ctx.asc.getAll<SubscriptionAttributes>(`/v1/subscriptionGroups/${group.id}/subscriptions`)).data };
+    }),
+  );
 }
 
 async function resolveSubscription(ctx: ToolContext, app: AppRef, wanted: string): Promise<Resource<SubscriptionAttributes>> {
@@ -96,13 +106,13 @@ export const listSubscriptionsTool = defineTool({
 });
 
 async function currentPrice(ctx: ToolContext, subscriptionId: string, territory: string): Promise<string | undefined> {
-  const doc = await ctx.asc.get<Resource<SubscriptionPriceAttributes>[]>(`/v1/subscriptions/${subscriptionId}/prices`, {
+  // Every price entry for the territory (past, current and scheduled); Apple can't sort them by date.
+  const doc = await ctx.asc.getAll<SubscriptionPriceAttributes>(`/v1/subscriptions/${subscriptionId}/prices`, {
     "filter[territory]": territory,
     include: "subscriptionPricePoint,territory",
-    limit: 10,
   });
   const included = new Included(doc.included);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = new Date(ctx.now()).toISOString().slice(0, 10);
   // The current price is the latest one that has started; future scheduled prices come after it.
   const started = doc.data
     .filter((p) => !p.attributes?.startDate || p.attributes.startDate <= today)

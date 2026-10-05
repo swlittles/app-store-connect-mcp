@@ -249,6 +249,51 @@ describe("review regressions", () => {
     expect(fileNames(h.fake)).toEqual(["old-1.png", "old-2.png", "new-3.png", "old-4.png", "old-5.png", "old-6.png", "old-7.png", "old-8.png", "old-9.png", "old-10.png"]);
   });
 
+  it("a full set whose new image Apple rejects resumes into the old slot without losing another screenshot", async () => {
+    h = makeHarness();
+    seedApp(h.fake);
+    screenshotBehaviour(h, { fail: (name) => name === "bad.png" });
+    seedVersion(h.fake, { screenshots: 10 });
+    const [bad, good] = tempImages(["bad.png", "good.png"]);
+    const first = await h.call("replace_screenshot", { ...base, position: 5, file: bad, dry_run: false });
+    expect(first.isError).toBe(true);
+    expect(h.fake.get("appScreenshots", "shot-5")).toBeUndefined(); // full set: deleted first
+    // Repeating position 5 alone would now replace old-6, so the advice must name the screenshot.
+    expect(first.text).not.toMatch(/run the same call again/i);
+    expect(first.text).toContain('call replace_screenshot again with screenshot_id: "shot-5", position: 5');
+
+    const second = await h.call("replace_screenshot", { ...base, screenshot_id: "shot-5", position: 5, file: good, dry_run: false });
+    expect(second.isError, second.text).toBe(false);
+    expect(fileNames(h.fake)).toEqual(["old-1.png", "old-2.png", "old-3.png", "old-4.png", "good.png", "old-6.png", "old-7.png", "old-8.png", "old-9.png", "old-10.png"]);
+  });
+
+  it("a full set whose upload fails mid-transfer resumes into the old slot", async () => {
+    seedVersion(h.fake, { screenshots: 10 });
+    const [file] = tempImages(["new-5.png"]);
+    h.fake.fail(/\/0$/, { status: 403 }, { method: "PUT" });
+    const first = await h.call("replace_screenshot", { ...base, position: 5, file, dry_run: false });
+    expect(first.isError).toBe(true);
+    expect(first.text).toContain('To continue, call replace_screenshot again with screenshot_id: "shot-5", position: 5');
+
+    // The broken reservation is cleared to make room, never one of the good screenshots.
+    const second = await h.call("replace_screenshot", { ...base, screenshot_id: "shot-5", position: 5, file, dry_run: false });
+    expect(second.isError, second.text).toBe(false);
+    expect(fileNames(h.fake)).toEqual(["old-1.png", "old-2.png", "old-3.png", "old-4.png", "new-5.png", "old-6.png", "old-7.png", "old-8.png", "old-9.png", "old-10.png"]);
+  });
+
+  it("says which uploads landed in the set when another one is rejected", async () => {
+    h = makeHarness();
+    seedApp(h.fake);
+    screenshotBehaviour(h, { fail: (name) => name === "bad.png" });
+    seedVersion(h.fake, { screenshots: 2 });
+    const files = tempImages(["ok.png", "bad.png"]);
+    const { text, isError } = await h.call("upload_screenshots", { ...base, files, dry_run: false });
+    expect(isError).toBe(true);
+    expect(fileNames(h.fake)).toEqual(["old-1.png", "old-2.png", "ok.png"]);
+    expect(text).not.toContain("listing is unchanged");
+    expect(text).toContain("1 new image that uploaded fine is at the end of the set for now (ok.png)");
+  });
+
   it("an upload that never finished doesn't block the set, and replace cleans it up", async () => {
     seedVersion(h.fake, { screenshots: 2 });
     h.fake.add("appScreenshots", "stuck", { fileName: "stuck.png", fileSize: 10, assetDeliveryState: { state: "AWAITING_UPLOAD" } }, { appScreenshotSet: SET_ID });

@@ -153,8 +153,16 @@ export type Desired = { existing: string } | { file: LocalFile };
  * upload new images, wait until Apple has processed them, reorder, and only then delete what's
  * no longer wanted. Each step re-reads state, and new files are matched to screenshots already
  * in the set by MD5, so re-running after a failure or timeout continues instead of duplicating.
+ * `again` is how to continue after a stop, phrased to follow "To continue, ".
  */
-export async function syncSet(ctx: ToolContext, target: SetTarget, desired: Desired[], log: StepLog, waitMinutes: number): Promise<{ finished: boolean }> {
+export async function syncSet(
+  ctx: ToolContext,
+  target: SetTarget,
+  desired: Desired[],
+  log: StepLog,
+  waitMinutes: number,
+  again = "run the same call again",
+): Promise<{ finished: boolean }> {
   if (desired.length > MAX_SCREENSHOTS) throw new UserError(`A set holds at most ${MAX_SCREENSHOTS} screenshots; this would leave ${desired.length}.`);
   const current = target.screenshots;
   const byId = new Map(current.map((s) => [s.id, s]));
@@ -203,7 +211,7 @@ export async function syncSet(ctx: ToolContext, target: SetTarget, desired: Desi
     return { finished: false };
   }
 
-  const state: SyncState = { pendingDeletes: [] };
+  const state: SyncState = { pendingDeletes: [], again };
   try {
     return await applySync(ctx, target, slots, byId, early, log, waitMinutes, state);
   } catch (error) {
@@ -212,7 +220,7 @@ export async function syncSet(ctx: ToolContext, target: SetTarget, desired: Desi
     const message = error instanceof Error ? error.message : String(error);
     const next = state.pendingDeletes.length
       ? `The new order is in place; only the cleanup is left. To finish, call delete_screenshots with screenshots ${JSON.stringify(state.pendingDeletes)} and dry_run: false.`
-      : "Run the same call again to continue; uploads already done are matched by checksum and not repeated.";
+      : `To continue, ${again}; uploads already done are matched by checksum and not repeated.`;
     throw new UserError(`${STEP_LEGEND}\n${log.toString()}\n✗ ${message}\nThe steps above are done. ${next}`);
   }
 }
@@ -220,6 +228,8 @@ export async function syncSet(ctx: ToolContext, target: SetTarget, desired: Desi
 interface SyncState {
   /** Screenshots that are out of the requested order and only need deleting. */
   pendingDeletes: string[];
+  /** How to continue after a stop. */
+  again: string;
 }
 
 async function applySync(
@@ -299,16 +309,19 @@ async function applySync(
         await ctx.asc.deleteIfExists(`/v1/appScreenshots/${s.id}`);
         log.done(`Removed the rejected upload ${s.attributes?.fileName}`);
       }
+      // Uploads that did go through stay in the set, after the existing screenshots.
+      const added = value.filter((s) => shotState(s) !== "FAILED");
+      const stopped = `Stopped before reordering or deleting anything${early.length ? " else" : ""}`;
       log.info(
-        early.length
-          ? "Stopped before reordering or deleting anything else. Fix the image (usually its size), then run the same call again."
-          : "Stopped before reordering or deleting anything, so the live listing is unchanged. Fix the image (usually its size), then run the same call again.",
+        added.length
+          ? `${stopped}. ${plural(added.length, "new image")} that uploaded fine ${added.length === 1 ? "is" : "are"} at the end of the set for now (${added.map((s) => s.attributes?.fileName ?? s.id).join(", ")}); continuing puts ${added.length === 1 ? "it" : "them"} in place without uploading again. Fix the image (usually its size); to continue, ${state.again}.`
+          : `${stopped}${early.length ? "." : ", so the live listing is unchanged."} Fix the image (usually its size); to continue, ${state.again}.`,
       );
       // An error result, so an agent can't mistake this for success.
       throw new UserError(`${STEP_LEGEND}\n${log.toString()}`);
     }
     if (!done) {
-      log.warn(`Apple is still processing ${plural(value.filter((s) => shotState(s) !== "COMPLETE").length, "image")}. Run the same call again to finish (uploads won't repeat).`);
+      log.warn(`Apple is still processing ${plural(value.filter((s) => shotState(s) !== "COMPLETE").length, "image")}. To finish, ${state.again} (uploads won't repeat).`);
       return { finished: false };
     }
     log.done(`Apple finished processing ${plural(pendingIds.size, "image")}`);
@@ -337,7 +350,7 @@ async function applySync(
   // 7. Verify.
   const final = await readSet(ctx, setId);
   if (!sameOrder(final.map((s) => s.id), finalIds)) {
-    log.warn("The set doesn't match the requested order yet. Re-run the same call; it will fix whatever is left.");
+    log.warn(`The set doesn't match the requested order yet. To fix whatever is left, ${state.again}.`);
   }
   log.info(`Set ${setId} now:`);
   final.forEach((s, i) => log.info(`  ${describeShot(s, i + 1)}`));
@@ -460,15 +473,27 @@ export const replaceScreenshot = defineTool({
     if (args.screenshot_id) {
       old = current.find((s) => s.id === args.screenshot_id);
       if (!old) {
-        if (!copy) throw new UserError(`Screenshot ${args.screenshot_id} isn't in this set (it has ${current.length}). Check with list_screenshots.`);
+        const again = "call replace_screenshot again with the same arguments";
+        if (!copy) {
+          if (args.position === undefined) {
+            throw new UserError(`Screenshot ${args.screenshot_id} isn't in this set (it has ${current.length}). Check with list_screenshots.`);
+          }
+          // An earlier run removed the old one to make room (a full set deletes first), but the
+          // new image never made it in. Put it where the old one was.
+          log.info(`${args.screenshot_id} is already gone; adding ${file!.fileName} at #${args.position}`);
+          const desired: Desired[] = keptExcept(current, [file!]).map((s) => ({ existing: s.id }));
+          desired.splice(Math.min(args.position - 1, desired.length), 0, { file: file! });
+          await syncSet(ctx, target, desired, log, args.wait_minutes, again);
+          return done([]);
+        }
         // An earlier, interrupted run already removed the old one (a full set deletes first).
         // All that may be left is putting the new image in place.
         log.skip(`${args.screenshot_id} is already gone and ${file!.fileName} is uploaded (${copy.id})`);
         const rest = keptExcept(current, [file!]).map((s) => s.id);
         const at = args.position ? Math.min(args.position - 1, rest.length) : current.indexOf(copy);
         rest.splice(at, 0, copy.id);
-        const { finished } = await syncSet(ctx, target, rest.map((existing) => ({ existing })), log, args.wait_minutes);
-        return done(finished || ctx.dryRun ? [] : [`To continue, call replace_screenshot again with the same arguments.`]);
+        await syncSet(ctx, target, rest.map((existing) => ({ existing })), log, args.wait_minutes, again);
+        return done([]);
       }
     } else {
       old = current[args.position! - 1];
@@ -491,16 +516,12 @@ export const replaceScreenshot = defineTool({
 
     log.info(`Replacing #${current.indexOf(old) + 1} ${old.attributes?.fileName ?? old.id} (id ${old.id}) with ${file!.fileName}`);
     const position = current.indexOf(old) + 1;
-    const resume = `To continue, call replace_screenshot again with screenshot_id: "${old.id}", position: ${position} and the same file.`;
+    // Positions shift once a full set deletes first, so continuing always names the screenshot.
+    const again = `call replace_screenshot again with screenshot_id: "${old.id}", position: ${position} and the same file`;
     const desired: Desired[] = keptExcept(current, [file!]).map((s) => (s.id === old.id ? { file: file! } : { existing: s.id }));
     if (!desired.some((d) => "file" in d)) desired.splice(position - 1, 0, { file: file! });
-    try {
-      const { finished } = await syncSet(ctx, target, desired, log, args.wait_minutes);
-      return done(finished || ctx.dryRun ? [] : [resume]);
-    } catch (error) {
-      if (error instanceof UserError && error.message.startsWith(STEP_LEGEND)) throw new UserError(`${error.message}\n${resume}`);
-      throw error;
-    }
+    await syncSet(ctx, target, desired, log, args.wait_minutes, again);
+    return done([]);
   },
 });
 

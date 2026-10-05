@@ -77,6 +77,40 @@ describe("subscriptions", () => {
     expect(text).toMatch(/✗ USA: .*No price for this territory/);
   });
 
+  it("finds subscriptions beyond the 50 Apple includes per group", async () => {
+    for (let i = 1; i < 60; i++) {
+      h.fake.add("subscriptions", `sub-${i}`, { name: `Extra ${i}`, productId: `com.example.app.extra${i}`, subscriptionPeriod: "ONE_MONTH", state: "APPROVED", groupLevel: i + 1 }, { group: "sg-1" });
+    }
+    // Like Apple, cut the included subscriptions at limit[subscriptions].
+    const original = h.fake.fetch;
+    (h.asc as unknown as { fetchImpl: typeof fetch }).fetchImpl = async (input, init) => {
+      const res = await original(input, init);
+      if (new URL(String(input)).pathname !== `/v1/apps/${APP_ID}/subscriptionGroups`) return res;
+      const doc = (await res.json()) as { data: { relationships: { subscriptions: { data?: { id: string }[] } } }[]; included?: { id: string }[] };
+      for (const g of doc.data) g.relationships.subscriptions.data = g.relationships.subscriptions.data?.slice(0, 50);
+      const kept = new Set(doc.data.flatMap((g) => (g.relationships.subscriptions.data ?? []).map((d) => d.id)));
+      doc.included = doc.included?.filter((r) => kept.has(r.id));
+      return new Response(JSON.stringify(doc), { status: res.status, headers: res.headers });
+    };
+    const { text, isError } = await h.call("remove_intro_offers", { subscription: "com.example.app.extra59" });
+    expect(isError, text).toBe(false);
+    expect(text).toContain("Extra 59 (com.example.app.extra59)");
+  });
+
+  it("finds the current price among more than 10 price entries", async () => {
+    h.fake.add("territories", "USA", { currency: "USD" });
+    const prices: string[] = [];
+    for (let i = 1; i <= 12; i++) {
+      h.fake.add("subscriptionPricePoints", `pp-${i}`, { customerPrice: `${i}.99` });
+      h.fake.add("subscriptionPrices", `price-${i}`, { startDate: `2025-${String(i).padStart(2, "0")}-01` }, { subscriptionPricePoint: `pp-${i}`, territory: "USA" });
+      prices.push(`price-${i}`);
+    }
+    h.fake.get("subscriptions", "sub-yearly")!.relationships.prices = prices;
+    const { text, isError } = await h.call("list_subscriptions", {});
+    expect(isError, text).toBe(false);
+    expect(text).toContain("12.99 USD in USA");
+  });
+
   it("stops a bulk job early when the hourly rate limit runs low", async () => {
     h.fake.rateLimitRemaining = 80;
     const { text } = await h.call("remove_intro_offers", { subscription: "sub-yearly", dry_run: false });
@@ -191,6 +225,80 @@ describe("prepare_version and submit_for_review", () => {
   });
 });
 
+describe("submit_for_review re-runs", () => {
+  const BUILD_ID = "aaaaaaaa-0000-4000-8000-000000000001";
+
+  function seedSubmittable(): void {
+    seedVersion(h.fake);
+    seedAppInfo();
+    seedTestFlight(h.fake);
+    h.fake.get("appStoreVersions", VERSION_ID)!.relationships.build = BUILD_ID;
+    h.fake.add("appStoreReviewDetails", "rd-1", { contactFirstName: "Sam", contactLastName: "Lee", contactEmail: "review@example.com", contactPhone: "+1 555 0100", demoAccountRequired: false }, { appStoreVersion: VERSION_ID });
+    // Like Apple: a new submission is a draft, adding the version makes it READY_FOR_REVIEW, and submitting sends it.
+    h.fake.afterCreate.reviewSubmissions = (_f, _req, res) => {
+      res!.attributes.state = "READY_FOR_REVIEW";
+    };
+    h.fake.afterCreate.reviewSubmissionItems = (f, _req, res) => {
+      const v = f.get("appStoreVersions", res!.relationships.appStoreVersion as string)!;
+      v.attributes.appVersionState = v.attributes.appStoreState = "READY_FOR_REVIEW";
+    };
+    h.fake.afterUpdate.reviewSubmissions = (_f, _req, res) => {
+      if (res!.attributes.submitted) res!.attributes.state = "WAITING_FOR_REVIEW";
+    };
+  }
+
+  function failFinalStep(): void {
+    h.fake.fail(/^\/v1\/reviewSubmissions\/[^/]+$/, { status: 409, body: { errors: [{ status: "409", code: "STATE_ERROR", title: "Invalid state", detail: "App Privacy answers are missing." }] } }, { method: "PATCH" });
+  }
+
+  it("resumes the draft submission after the final step fails", async () => {
+    seedSubmittable();
+    failFinalStep();
+    const first = await h.call("submit_for_review", { dry_run: false });
+    expect(first.isError).toBe(true);
+    expect(h.fake.get("appStoreVersions", VERSION_ID)!.attributes.appVersionState).toBe("READY_FOR_REVIEW");
+
+    const again = await h.call("submit_for_review", { dry_run: false });
+    expect(again.isError, again.text).toBe(false);
+    expect(again.text).toContain("Reusing review submission");
+    expect(again.text).toContain("The version is already in the submission");
+    expect(again.text).toContain("✓ Submitted to App Review: WAITING_FOR_REVIEW");
+    expect(h.fake.all("reviewSubmissions")).toHaveLength(1);
+    expect(h.fake.specViolations).toEqual([]);
+  });
+
+  it("cancel_review_submission takes the version out of a draft that was never sent", async () => {
+    seedSubmittable();
+    failFinalStep();
+    await h.call("submit_for_review", { dry_run: false });
+    const plan = await h.call("cancel_review_submission", {});
+    expect(plan.text).toContain("Would remove 1 item (version 1.0) from draft review submission");
+    const { text, isError } = await h.call("cancel_review_submission", { dry_run: false });
+    expect(isError, text).toBe(false);
+    expect(text).toContain("Removed 1 item (version 1.0)");
+    expect(h.fake.all("reviewSubmissionItems")).toEqual([]);
+    expect(h.fake.writes().filter((r) => r.method === "DELETE").map((r) => r.path)).toEqual([expect.stringMatching(/^\/v1\/reviewSubmissionItems\//)]);
+    expect(h.fake.specViolations).toEqual([]);
+  });
+
+  it("pre-flight doesn't count screenshots Apple rejected", async () => {
+    seedSubmittable();
+    for (const s of h.fake.all("appScreenshots")) s.attributes.assetDeliveryState = { state: "FAILED" };
+    const { text } = await h.call("submit_for_review", {});
+    expect(text).toContain("✗ en-US: no screenshots that Apple has finished processing");
+  });
+
+  it("isn't fooled by a submission in review that doesn't hold this version", async () => {
+    seedSubmittable();
+    h.fake.add("reviewSubmissions", "rs-other", { platform: "IOS", state: "WAITING_FOR_REVIEW", submittedDate: "2026-10-01T00:00:00Z" }, { app: APP_ID });
+    h.fake.add("reviewSubmissionItems", "rsi-other", { state: "READY_FOR_REVIEW" }, { reviewSubmission: "rs-other" });
+    const { text, isError } = await h.call("submit_for_review", { dry_run: false });
+    expect(isError, text).toBe(false);
+    expect(text).not.toContain("Already submitted");
+    expect(text).toContain("✓ Submitted to App Review");
+  });
+});
+
 describe("customer reviews and reports", () => {
   beforeEach(() => {
     h.fake.add("customerReviews", "rev-1", { rating: 2, title: "Too hard", body: "Level 3 is impossible", reviewerNickname: "puzzler", territory: "USA", createdDate: "2026-10-01T00:00:00Z" });
@@ -211,6 +319,18 @@ describe("customer reviews and reports", () => {
     expect(h.fake.all("customerReviewResponses")).toHaveLength(1);
   });
 
+  it("replaces a reply without deleting it first, so a failed post keeps the old one", async () => {
+    await h.call("reply_to_review", { review_id: "rev-1", text: "Thanks!", dry_run: false });
+    h.fake.fail(/^\/v1\/customerReviewResponses$/, { status: 500 }, { method: "POST" });
+    const failed = await h.call("reply_to_review", { review_id: "rev-1", text: "Updated", replace: true, dry_run: false });
+    expect(failed.isError).toBe(true);
+    expect(h.fake.all("customerReviewResponses").map((r) => r.attributes.responseBody)).toEqual(["Thanks!"]);
+    const replaced = await h.call("reply_to_review", { review_id: "rev-1", text: "Updated", replace: true, dry_run: false });
+    expect(replaced.text).toContain("Replaced the reply");
+    expect(h.fake.all("customerReviewResponses").map((r) => r.attributes.responseBody)).toEqual(["Updated"]);
+    expect(h.fake.writes().filter((r) => r.method === "DELETE")).toEqual([]);
+  });
+
   it("unzips a sales report and totals it", async () => {
     const tsv = ["Provider\tSKU\tUnits\tDeveloper Proceeds\tCurrency of Proceeds", "APPLE\texample\t3\t0.70\tUSD", "APPLE\texample\t2\t0.60\tEUR"].join("\n");
     const original = h.fake.fetch;
@@ -228,6 +348,24 @@ describe("customer reviews and reports", () => {
     expect(text).toContain("2 rows");
     expect(text).toContain("Total units: 5");
     expect(text).toContain("Developer proceeds: 2.10 USD, 1.20 EUR");
+  });
+
+  it("defaults the finance region to Z1 for FINANCE_DETAIL and ZZ otherwise", async () => {
+    const regions: (string | null)[] = [];
+    const original = h.fake.fetch;
+    (h.asc as unknown as { fetchImpl: typeof fetch }).fetchImpl = async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/financeReports") {
+        regions.push(url.searchParams.get("filter[regionCode]"));
+        return new Response(gzipSync("Start Date\tQuantity\n2026-09-01\t1"), { status: 200, headers: { "content-type": "application/a-gzip" } });
+      }
+      return original(input, init);
+    };
+    for (const report_type of ["FINANCE_DETAIL", "FINANCIAL"]) {
+      const { text, isError } = await h.call("download_report", { kind: "finance", report_type, report_date: "2026-09", vendor_number: "80000000" });
+      expect(isError, text).toBe(false);
+    }
+    expect(regions).toEqual(["Z1", "ZZ"]);
   });
 });
 

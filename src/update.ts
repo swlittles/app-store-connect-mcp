@@ -4,19 +4,22 @@
 // install or build is rolled back.
 
 import { execFile } from "node:child_process";
-import { chmodSync, closeSync, existsSync, openSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { chmodSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export type UpdateChannel = "release" | "main";
 
 export interface UpdateResult {
-  status: "updated" | "current" | "skipped" | "failed";
+  /** "installing" is only ever seen on disk: an update that was interrupted and gets finished next time. */
+  status: "updated" | "current" | "skipped" | "failed" | "installing";
   /** When this result was produced (ISO). */
   at: string;
   from?: string;
   to?: string;
   reason?: string;
+  /** While installing: the commit to roll back to. */
+  fromCommit?: string;
 }
 
 export interface UpdateOptions {
@@ -29,12 +32,16 @@ export interface UpdateOptions {
   log?: (message: string) => void;
   /** Runs a command; injectable for tests. Rejects on a non-zero exit. */
   run?: (command: string, args: string[], cwd: string) => Promise<string>;
-  /** Installs dependencies and builds. `lockChanged` says whether npm ci is needed. Injectable for tests. */
+  /**
+   * Installs dependencies and builds. `lockChanged` says whether npm ci is needed. If it fails, it must
+   * leave the previous node_modules in place so the old version can be rebuilt. Injectable for tests.
+   */
   install?: (root: string, lockChanged: boolean) => Promise<void>;
 }
 
 const DEFAULT_INTERVAL_MS = 30 * 60_000;
-const STALE_LOCK_MS = 10 * 60_000;
+// Longer than an install plus a rollback can take (each command times out after 10 minutes).
+const STALE_LOCK_MS = 30 * 60_000;
 const STATUS_FILE = "asc-mcp-update.json";
 const LOCK_FILE = "asc-mcp-update.lock";
 
@@ -75,12 +82,14 @@ export async function checkForUpdate(options: UpdateOptions): Promise<UpdateResu
 
   const statusPath = join(gitDir, STATUS_FILE);
   const previous = readJson<UpdateResult>(statusPath);
-  if (!options.force && previous && now() - Date.parse(previous.at) < (options.minIntervalMs ?? DEFAULT_INTERVAL_MS)) {
+  // An update that was killed part-way (HEAD moved, install unfinished) is finished first, whatever the interval.
+  const resume = previous?.status === "installing" && previous.fromCommit ? previous : undefined;
+  if (!options.force && !resume && previous && now() - Date.parse(previous.at) < (options.minIntervalMs ?? DEFAULT_INTERVAL_MS)) {
     return previous;
   }
 
   const lockPath = join(gitDir, LOCK_FILE);
-  if (!takeLock(lockPath, now())) return result("skipped", { reason: "another update is already running" });
+  if (!takeLock(lockPath, now())) return result("skipped", { reason: `another update is already running (if it isn't, delete ${lockPath})` });
   const save = (r: UpdateResult) => {
     writeFileSync(statusPath, JSON.stringify(r, null, 2));
     return r;
@@ -95,19 +104,22 @@ export async function checkForUpdate(options: UpdateOptions): Promise<UpdateResu
     else await git("fetch", "--quiet", "origin", "main");
 
     const head = (await git("rev-parse", "HEAD")).trim();
-    const from = await describe(git, head);
+    // Roll back to what last worked: after an interrupted update, that's the commit it started from.
+    const rollbackTo = resume?.fromCommit ?? head;
+    const from = await describe(git, rollbackTo);
     let targetRef: string;
     if (options.channel === "release") {
-      const tags = (await git("tag", "--list", "v*", "--sort=-v:refname")).split("\n").map((t) => t.trim()).filter((t) => /^v\d+\.\d+\.\d+$/.test(t));
+      // The newest tag on GitHub now, so a tag that was pushed by mistake and deleted is never followed.
+      const tags = newestFirst((await git("ls-remote", "--tags", "--refs", "origin", "v*")).split("\n").map((l) => l.split("refs/tags/")[1]?.trim() ?? ""));
       if (!tags.length) return save(result("current", { from, reason: "no releases published yet" }));
       targetRef = tags[0]!;
     } else {
       targetRef = "origin/main";
     }
     const target = (await git("rev-parse", `${targetRef}^{commit}`)).trim();
-    if (target === head) return save(result("current", { from }));
+    if (target === head && !resume) return save(result("current", { from }));
     const to = options.channel === "release" ? targetRef : await describe(git, target);
-    if (!options.force && previous?.status === "failed" && previous.to === to) {
+    if (!options.force && !resume && previous?.status === "failed" && previous.to === to) {
       // Don't retry a version that already failed to install; wait for a newer one (or --update).
       return save({ ...previous, at: new Date(now()).toISOString() });
     }
@@ -118,20 +130,28 @@ export async function checkForUpdate(options: UpdateOptions): Promise<UpdateResu
       return save(result("skipped", { from, reason: `this copy has commits that aren't in ${targetRef}` }));
     }
 
-    const lockChanged = await git("diff", "--quiet", head, target, "--", "package-lock.json").then(
-      () => false,
-      () => true,
-    );
+    // After an interrupted update node_modules may be half-installed, so always reinstall then.
+    const lockChanged =
+      Boolean(resume) ||
+      (await git("diff", "--quiet", rollbackTo, target, "--", "package-lock.json").then(
+        () => false,
+        () => true,
+      ));
     log(`Updating app-store-connect-mcp from ${from} to ${to}…`);
+    save(result("installing", { from, to, fromCommit: rollbackTo }));
     await git("checkout", "--quiet", "--detach", target);
     const install = options.install ?? defaultInstall(run);
     try {
       await install(options.root, lockChanged);
     } catch (error) {
-      // Put the previous version back so the next start still works.
-      await git("checkout", "--quiet", "--detach", head);
-      await install(options.root, lockChanged).catch(() => {});
-      return save(result("failed", { from, to, reason: `install failed, rolled back to ${from}: ${firstLine(error)}` }));
+      // Put the previous version back so the next start still works. A failed install leaves the
+      // previous node_modules in place, so this only rebuilds and doesn't need the network.
+      await git("checkout", "--quiet", "--detach", rollbackTo);
+      const rolledBack = await install(options.root, false).then(
+        () => `rolled back to ${from}`,
+        (rollbackError) => `rolling back to ${from} failed too (${firstLine(rollbackError)}); run npm ci in ${options.root}`,
+      );
+      return save(result("failed", { from, to, reason: `install failed, ${rolledBack}: ${firstLine(error)}` }));
     }
     log(`Updated to ${to}. Restart your agent to use it.`);
     return save(result("updated", { from, to }));
@@ -156,6 +176,8 @@ export function describeResult(r: UpdateResult | undefined, settings: { enabled:
       return `${head} Skipped at ${when}: ${r.reason}.`;
     case "failed":
       return `${head} Failed at ${when}: ${r.reason}.`;
+    case "installing":
+      return `${head} The update ${r.from} → ${r.to} started at ${when} didn't finish; it's completed on the next start.`;
   }
 }
 
@@ -178,21 +200,46 @@ async function describe(git: (...args: string[]) => Promise<string>, commit: str
   return tag.trim() || commit.slice(0, 7);
 }
 
+/** Release tags (vX.Y.Z only), newest first. */
+export function newestFirst(tags: string[]): string[] {
+  const parse = (t: string) => t.slice(1).split(".").map(Number);
+  return tags
+    .filter((t) => /^v\d+\.\d+\.\d+$/.test(t))
+    .sort((a, b) => {
+      const [x, y] = [parse(a), parse(b)];
+      return y[0]! - x[0]! || y[1]! - x[1]! || y[2]! - x[2]!;
+    });
+}
+
+/** The lock holds the owner's PID, so a lock left by a crashed or interrupted update is taken over at once. */
 function takeLock(path: string, now: number): boolean {
-  try {
-    closeSync(openSync(path, "wx"));
+  const create = () => {
+    writeFileSync(path, String(process.pid), { flag: "wx" });
     return true;
+  };
+  try {
+    return create();
   } catch {
     try {
-      if (now - statSync(path).mtimeMs > STALE_LOCK_MS) {
+      const pid = Number(readFileSync(path, "utf8").trim());
+      if (!isRunning(pid) || now - statSync(path).mtimeMs > STALE_LOCK_MS) {
         rmSync(path, { force: true });
-        closeSync(openSync(path, "wx"));
-        return true;
+        return create();
       }
     } catch {
       // Lost the race to another process.
     }
     return false;
+  }
+}
+
+function isRunning(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return true; // unknown owner: rely on the age check
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 
@@ -210,7 +257,10 @@ function firstLine(error: unknown): string {
 
 function defaultRun(command: string, args: string[], cwd: string): Promise<string> {
   return new Promise((resolvePromise, reject) => {
-    execFile(command, args, { cwd, maxBuffer: 16 * 1024 * 1024, timeout: 10 * 60_000 }, (error, stdout, stderr) => {
+    // npm and tsc start with `#!/usr/bin/env node`, so node's folder must be on PATH even when the
+    // agent started the server with a minimal one.
+    const env = { ...process.env, PATH: [dirname(process.execPath), process.env.PATH].filter(Boolean).join(delimiter) };
+    execFile(command, args, { cwd, env, maxBuffer: 16 * 1024 * 1024, timeout: 10 * 60_000 }, (error, stdout, stderr) => {
       if (error) {
         // tsc reports compile errors on stdout; keep the end of whichever stream has them.
         const output = (stderr.trim() || stdout.trim() || error.message).split("\n").slice(-5).join(" ").trim();
@@ -223,9 +273,27 @@ function defaultRun(command: string, args: string[], cwd: string): Promise<strin
 function defaultInstall(run: NonNullable<UpdateOptions["run"]>) {
   return async (root: string, lockChanged: boolean): Promise<void> => {
     if (lockChanged || !existsSync(join(root, "node_modules", "typescript"))) {
+      // npm ci deletes node_modules before downloading anything. Keep the working set aside so a
+      // failure (offline, registry down) can put it back. If a backup already exists, an earlier
+      // update was interrupted and the backup is the last set that worked: keep that one.
+      const modules = join(root, "node_modules");
+      const backup = join(root, "node_modules.prev");
+      if (existsSync(modules)) {
+        if (existsSync(backup)) rmSync(modules, { recursive: true, force: true });
+        else renameSync(modules, backup);
+      }
       // npm sits next to node in standard installs; fall back to PATH.
       const npm = join(dirname(process.execPath), "npm");
-      await run(existsSync(npm) ? npm : "npm", ["ci", "--no-audit", "--no-fund"], root); // also builds (prepare)
+      try {
+        await run(existsSync(npm) ? npm : "npm", ["ci", "--no-audit", "--no-fund"], root); // also builds (prepare)
+      } catch (error) {
+        if (existsSync(backup)) {
+          rmSync(modules, { recursive: true, force: true });
+          renameSync(backup, modules);
+        }
+        throw error;
+      }
+      rmSync(backup, { recursive: true, force: true });
       return;
     }
     // Dependencies unchanged: just rebuild, which works offline and takes seconds.

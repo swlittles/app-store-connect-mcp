@@ -202,7 +202,8 @@ export class AdsClient {
       }
       if ((res.status === 429 || res.status >= 500) && attempt < this.maxAttempts) {
         await res.body?.cancel();
-        const retryAfter = Number(res.headers.get("retry-after") ?? res.headers.get("ratelimit-reset"));
+        // Apple sends RateLimit-Reset on every response; it only says when to retry a 429, not a 5xx.
+        const retryAfter = Number(res.headers.get("retry-after") ?? (res.status === 429 ? res.headers.get("ratelimit-reset") : null));
         await this.sleep(Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter, 120) * 1000 : backoff);
         backoff = Math.min(backoff * 2, 16_000);
         continue;

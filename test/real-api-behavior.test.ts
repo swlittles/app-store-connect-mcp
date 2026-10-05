@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { seedApp, seedTestFlight, seedVersion, VERSION_ID } from "./helpers/fixtures.js";
 import { APP_ID, makeHarness } from "./helpers/harness.js";
+import { AGE_RATING_LEVEL_QUESTIONS } from "../src/tools/listing.js";
 
 const NULL_AGE_RATING = Object.fromEntries(
   [
@@ -63,6 +64,23 @@ describe("age rating on a fresh app", () => {
     expect(sent.messagingAndChat).toBe(false);
     expect(Object.keys(sent)).toHaveLength(22);
     expect(sent).not.toHaveProperty("socialMedia");
+  });
+
+  it("fill_unanswered sends the answers already given too", async () => {
+    // Seen on the real API: with the content questions answered and the newer yes/no ones empty,
+    // a PATCH with only the empty ones fails ("You must provide a value for the attribute ...").
+    const h = freshApp();
+    const age = h.fake.get("ageRatingDeclarations", "age-1")!;
+    for (const q of AGE_RATING_LEVEL_QUESTIONS) age.attributes[q] = "NONE";
+    age.attributes.violenceCartoonOrFantasy = "INFREQUENT_OR_MILD";
+    const { text, isError } = await h.call("update_age_rating", { fill_unanswered: true });
+    expect(isError, text).toBe(false);
+    const sent = (h.fake.writes().find((r) => r.method === "PATCH")!.body as { data: { attributes: Record<string, unknown> } }).data.attributes;
+    expect(Object.keys(sent)).toHaveLength(22);
+    expect(sent.violenceCartoonOrFantasy).toBe("INFREQUENT_OR_MILD");
+    // The diff only shows what changed.
+    expect(text).toContain("advertising: empty → false");
+    expect(text).not.toContain("violenceCartoonOrFantasy");
   });
 
   it("blocks submission while the questionnaire is unanswered", async () => {

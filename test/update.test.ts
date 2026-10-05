@@ -1,9 +1,9 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, openSync, closeSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, openSync, closeSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { checkForUpdate, describeResult, lastUpdateResult, updateSettings } from "../src/update.js";
+import { checkForUpdate, describeResult, lastUpdateResult, newestFirst, updateSettings } from "../src/update.js";
 
 // Real git repositories in a temp folder: "origin" plays GitHub, "install" is a user's clone.
 beforeAll(() => {
@@ -140,14 +140,82 @@ describe("checkForUpdate", { timeout: 30_000 }, () => {
   it("skips while another update holds the lock", async () => {
     const t = setup();
     closeSync(openSync(join(t.install, ".git", "asc-mcp-update.lock"), "w"));
-    expect((await checkForUpdate(t.opts)).reason).toBe("another update is already running");
+    expect((await checkForUpdate(t.opts)).reason).toContain("another update is already running");
     expect(git(t.install, "describe", "--tags")).toBe("v0.1.0");
+  });
+
+  it("takes over a lock left by an update that was killed", async () => {
+    const t = setup();
+    writeFileSync(join(t.install, ".git", "asc-mcp-update.lock"), "99999999"); // no such process
+    expect((await checkForUpdate(t.opts)).status).toBe("updated");
+  });
+
+  it("finishes an update that was interrupted after the checkout", async () => {
+    const t = setup();
+    const v1 = git(t.install, "rev-parse", "HEAD");
+    git(t.install, "fetch", "-q", "--tags");
+    git(t.install, "checkout", "-q", "--detach", "v0.2.0");
+    const status = { status: "installing", at: new Date().toISOString(), from: "v0.1.0", to: "v0.2.0", fromCommit: v1 };
+    writeFileSync(join(t.install, ".git", "asc-mcp-update.json"), JSON.stringify(status));
+    const result = await checkForUpdate(t.opts); // within the interval, but not cached
+    expect(result).toMatchObject({ status: "updated", from: "v0.1.0", to: "v0.2.0" });
+    expect(t.installs).toEqual([true]); // node_modules may be half-installed, so a full install
+  });
+
+  it("rolls an interrupted update back to the version that worked", async () => {
+    const t = setup();
+    const v1 = git(t.install, "rev-parse", "HEAD");
+    git(t.install, "fetch", "-q", "--tags");
+    git(t.install, "checkout", "-q", "--detach", "v0.2.0");
+    writeFileSync(join(t.install, ".git", "asc-mcp-update.json"), JSON.stringify({ status: "installing", at: new Date().toISOString(), fromCommit: v1 }));
+    const result = await checkForUpdate({ ...t.opts, install: async (_root, full) => { if (full) throw new Error("offline"); } });
+    expect(result.reason).toContain("rolled back to v0.1.0");
+    expect(git(t.install, "rev-parse", "HEAD")).toBe(v1);
+  });
+
+  it("ignores tags that are no longer on GitHub", async () => {
+    const t = setup();
+    git(t.install, "tag", "v9.0.0", "v0.1.0"); // e.g. pushed by mistake, fetched, then deleted upstream
+    expect(await checkForUpdate(t.opts)).toMatchObject({ status: "updated", to: "v0.2.0" });
+  });
+
+  it("keeps the working node_modules when npm ci fails, and rebuilds the old version offline", async () => {
+    const t = setup();
+    publish(t.work, "package-lock.json", '{"changed":true}', "v0.3.0");
+    mkdirSync(join(t.install, "node_modules", "typescript"), { recursive: true });
+    writeFileSync(join(t.install, "node_modules", "marker"), "working");
+    mkdirSync(join(t.install, "dist"));
+    writeFileSync(join(t.install, "dist", "index.js"), "");
+    const commands: string[] = [];
+    const result = await checkForUpdate({
+      root: t.install,
+      channel: "release",
+      run: async (command, args, cwd) => {
+        if (command === "git") return execFileSync("git", args, { cwd, encoding: "utf8" });
+        commands.push(args.includes("ci") ? "npm ci" : "tsc");
+        if (args.includes("ci")) {
+          rmSync(join(cwd, "node_modules"), { recursive: true, force: true }); // what npm ci does first
+          throw new Error("npm ci failed: ENOTFOUND registry.npmjs.org");
+        }
+        return "";
+      },
+    });
+    expect(result.reason).toContain("rolled back to v0.1.0");
+    expect(commands).toEqual(["npm ci", "tsc"]);
+    expect(readFileSync(join(t.install, "node_modules", "marker"), "utf8")).toBe("working");
+    expect(existsSync(join(t.install, "node_modules.prev"))).toBe(false);
   });
 
   it("does nothing outside a git clone", async () => {
     const dir = mkdtempSync(join(tmpdir(), "asc-plain-"));
     expect((await checkForUpdate({ root: dir, channel: "release" })).status).toBe("skipped");
     expect(existsSync(join(dir, ".git"))).toBe(false);
+  });
+});
+
+describe("newestFirst", () => {
+  it("sorts release tags by version and drops anything else", () => {
+    expect(newestFirst(["v0.9.0", "v0.10.0", "v0.10.0-beta", "v1.0", "latest", "v0.10.1"])).toEqual(["v0.10.1", "v0.10.0", "v0.9.0"]);
   });
 });
 

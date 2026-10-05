@@ -142,6 +142,47 @@ describe("get_build and list_builds", () => {
   });
 });
 
+describe("finding builds", () => {
+  it("prefers the iOS build when a Mac build has the same number", async () => {
+    seedTestFlight(h.fake);
+    h.fake.add("preReleaseVersions", "prv-mac", { version: "1.0", platform: "MAC_OS" });
+    h.fake.add("builds", "aaaaaaaa-0000-4000-8000-0000000000aa", { version: "202610010900", uploadedDate: "2026-10-01T10:00:00Z", processingState: "VALID", expired: false }, { app: APP_ID, preReleaseVersion: "prv-mac" });
+    const { text } = await h.call("get_build", { build: "202610010900" });
+    expect(text).toContain(`id ${BUILD_ID}`);
+    expect((await h.call("get_build", { build: "202610010900", platform: "MAC_OS" })).text).toContain("id aaaaaaaa-0000-4000-8000-0000000000aa");
+  });
+
+  it("refuses a build ID that belongs to another app", async () => {
+    seedTestFlight(h.fake);
+    h.fake.add("builds", "aaaaaaaa-0000-4000-8000-0000000000bb", { version: "7", uploadedDate: "2026-10-01T10:00:00Z", processingState: "VALID" }, { app: "1000000002" });
+    const { text, isError } = await h.call("distribute_build", { build: "aaaaaaaa-0000-4000-8000-0000000000bb", groups: ["Friends"] });
+    expect(isError).toBe(true);
+    expect(text).toContain("belongs to a different app (id 1000000002)");
+    expect(h.fake.writes()).toEqual([]);
+  });
+
+  it("names the filter when no build matches it", async () => {
+    seedTestFlight(h.fake);
+    const { text } = await h.call("get_build", { version: "1.3" });
+    expect(text).toContain("no builds matching version 1.3");
+  });
+
+  it("finds an app whose name is all digits", async () => {
+    h.fake.add("apps", "1000000003", { name: "2048", bundleId: "com.example.twentyfortyeight", sku: "2048", primaryLocale: "en-US" });
+    const { text, isError } = await h.call("get_app_status", { app: "2048" });
+    expect(isError, text).toBe(false);
+    expect(text).toContain("2048 · id 1000000003");
+  });
+
+  it("shows open review submissions even when Apple lists old ones first", async () => {
+    for (let i = 0; i < 6; i++) h.fake.add("reviewSubmissions", `rs-old-${i}`, { platform: "IOS", state: "COMPLETE", submittedDate: "2026-01-01T00:00:00Z" }, { app: APP_ID });
+    h.fake.add("reviewSubmissions", "rs-open", { platform: "IOS", state: "WAITING_FOR_REVIEW", submittedDate: "2026-10-01T00:00:00Z" }, { app: APP_ID });
+    const { text } = await h.call("get_app_status", {});
+    expect(text).toContain("WAITING_FOR_REVIEW");
+    expect(text).not.toContain("rs-old-0");
+  });
+});
+
 describe("testers", () => {
   beforeEach(() => {
     seedTestFlight(h.fake);
@@ -238,6 +279,24 @@ describe("upload_build", () => {
     expect(isError).toBe(true);
     expect(text).toContain("started 10 min ago");
     expect(h.fake.writes()).toEqual([]);
+  });
+
+  it("discards a failed attempt so the next run can upload straight away", async () => {
+    seedTestFlight(h.fake);
+    h.fake.afterCreate.buildUploadFiles = (_f, _req, res) => {
+      res!.attributes.uploadOperations = [{ method: "PUT", url: `https://upload.fake.example/${res!.id}`, offset: 0, length: res!.attributes.fileSize, requestHeaders: [] }];
+    };
+    h.fake.fail(/^\/v1\/buildUploadFiles\//, { status: 409, body: { errors: [{ status: "409", code: "STATE_ERROR", title: "Upload slot expired" }] } }, { method: "PATCH" });
+    const dir = mkdtempSync(join(tmpdir(), "asc-ipa-"));
+    const ipa = join(dir, "Example.ipa");
+    writeFileSync(ipa, Buffer.alloc(64));
+    const args = { file: ipa, version: "1.0", build_number: "202610011500" };
+    const first = await h.call("upload_build", args);
+    expect(first.isError).toBe(true);
+    expect(first.text).toContain("the attempt was discarded");
+    expect(h.fake.all("buildUploads")).toEqual([]);
+    const second = await h.call("upload_build", args);
+    expect(second.isError, second.text).toBe(false);
   });
 
   it("doesn't upload a build number that already exists", async () => {

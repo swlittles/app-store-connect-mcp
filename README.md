@@ -98,7 +98,7 @@ Then ask for things in plain language:
 | `ASC_ISSUER_ID` | Issuer ID for team keys. Leave it unset for an individual key, which signs with `sub: "user"`. |
 | `ASC_KEY_PATH` | Path to the `.p8` file. `~` is expanded. |
 | `ASC_KEY` | The PEM contents instead of a path. Literal `\n` sequences are accepted. |
-| `ASC_WRITE` | `1` allows changes. Without it the server is read-only, and write tools only return plans. |
+| `ASC_WRITE` | `1` allows changes. Without it the server is read-only: write tools refuse, but still return plans when called with `dry_run: true`. |
 | `ASC_APP_ID` | Default app, as an app ID, bundle ID or exact name. If it's unset and the key can see only one app, that app is used. |
 | `ASC_VENDOR_NUMBER` | Vendor number for `download_report` (shown in Payments and Financial Reports). |
 | `ASC_TOOLS` | Only offer these tools or groups. Default: all. See [Turning tools off](#turning-tools-off). |
@@ -216,7 +216,7 @@ Tools take an `app` argument, which can be an app ID, a bundle ID or a name. Res
 | `prepare_version` | yes | Creates or renames the version being prepared, attaches a build, sets the release type. |
 | `set_review_details` | yes | App Review contact, demo account and notes. The password is never echoed back. |
 | `submit_for_review` | destructive | Pre-flight checks, then submits through `reviewSubmissions`. |
-| `cancel_review_submission` | destructive | Withdraws an active submission. |
+| `cancel_review_submission` | destructive | Withdraws an active submission, or takes the version out of a draft submission that was never sent. |
 | `remove_intro_offers` | destructive | Bulk-deletes introductory offers (e.g. a free trial) across territories. |
 | `add_free_trial` | yes | Bulk-adds a free trial in every territory that lacks an introductory offer. |
 | `reply_to_review` | destructive | Publishes a public reply to a customer review; `replace: true` changes an existing one. |
@@ -227,7 +227,7 @@ Tools take an `app` argument, which can be an app ID, a bundle ID or a name. Res
 
 - **Read-only by default.** Without `ASC_WRITE=1`, write tools refuse to change anything, but they still return a plan if called with `dry_run: true`.
 - **Destructive means dry run first.** Tools that delete things (screenshots, offers, testers) or can't be taken back (submitting for review) default to `dry_run: true`. The agent gets the plan, shows it to you, and calls again with `dry_run: false`. The tools carry MCP `destructiveHint` and `readOnlyHint` annotations, so clients can ask before running them.
-- **Order that never leaves a gap.** When `replace_screenshot` replaces an image, it uploads the new one, waits until Apple has processed it, puts it in place, and only then deletes the old one. If Apple rejects the image, nothing in the live listing changes. The one exception is a full set of 10. Apple won't allow an 11th screenshot even briefly, so the old one has to be deleted first, and the dry run says so.
+- **Order that never leaves a gap.** When `replace_screenshot` replaces an image, it uploads the new one, waits until Apple has processed it, puts it in place, and only then deletes the old one. If Apple rejects the image, nothing in the live listing changes. The one exception is a full set of 10. Apple won't allow an 11th screenshot even briefly, so the old one has to be deleted first, and the dry run says so. If the new image then fails, re-running the same call puts it in the old one's place.
 - **Least privilege.** See below.
 
 ## Choosing a key role

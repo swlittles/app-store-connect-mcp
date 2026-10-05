@@ -80,7 +80,7 @@ export function createServer(runtime: ServerRuntime): McpServer {
     ? `NOT CONFIGURED: ${runtime.configError.message}`
     : runtime.config?.write
       ? "Writes are ENABLED (ASC_WRITE=1)."
-      : "Read-only: write tools only return plans (dry runs) until the user restarts the server with ASC_WRITE=1.";
+      : "Read-only: write tools refuse to change anything until the user restarts the server with ASC_WRITE=1. Call them with dry_run: true to see the plan.";
   const server = new McpServer(
     { name: "app-store-connect", version: VERSION },
     {

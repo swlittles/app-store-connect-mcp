@@ -262,6 +262,11 @@ export class FakeAsc {
       res.relationships = { ...vetoRels };
       const vetoed = hook?.(this, req, res);
       if (vetoed) return vetoed;
+      // Apple overwrites a review's existing reply instead of adding a second one.
+      if (type === "customerReviewResponses") {
+        const old = this.get("customerReviews", String(vetoRels.review))?.relationships.response;
+        if (typeof old === "string") this.table(type).delete(old);
+      }
       res.relationships = {};
       this.table(type).set(res.id, res);
       for (const [rel, value] of Object.entries(vetoRels)) this.setRel(res, rel, value);

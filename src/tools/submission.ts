@@ -4,6 +4,7 @@ import { Included, linkage, relId } from "../asc/jsonapi.js";
 import type {
   AppInfoAttributes,
   AppInfoLocalizationAttributes,
+  AppScreenshotAttributes,
   AppScreenshotSetAttributes,
   AppStoreReviewDetailAttributes,
   AppStoreVersionAttributes,
@@ -12,7 +13,7 @@ import type {
   ReviewSubmissionAttributes,
   ReviewSubmissionItemAttributes,
 } from "../asc/types.js";
-import { STEP_LEGEND, StepLog, when } from "./format.js";
+import { STEP_LEGEND, StepLog, plural, when } from "./format.js";
 import { unansweredAgeQuestions } from "./listing.js";
 import { defineTool, UserError, type ToolContext } from "./framework.js";
 import {
@@ -122,6 +123,18 @@ export const prepareVersion = defineTool({
 const OPEN_SUBMISSION_STATES = new Set(["READY_FOR_REVIEW", "UNRESOLVED_ISSUES"]);
 const ACTIVE_SUBMISSION_STATES = new Set(["WAITING_FOR_REVIEW", "IN_REVIEW"]);
 
+/** A review submission's items, with the App Store version each one holds (if any). */
+async function submissionItems(ctx: ToolContext, submissionId: string) {
+  const doc = await ctx.asc.get<Resource<ReviewSubmissionItemAttributes>[]>(`/v1/reviewSubmissions/${submissionId}/items`, {
+    include: "appStoreVersion",
+  });
+  const included = new Included(doc.included);
+  // Items Apple marked REMOVED are no longer part of the submission.
+  return doc.data
+    .filter((item) => item.attributes?.state !== "REMOVED")
+    .map((item) => ({ item, versionId: relId(item, "appStoreVersion"), version: included.one<AppStoreVersionAttributes>(item, "appStoreVersion", "appStoreVersions") }));
+}
+
 /** Checks the things App Review rejects submissions for that the API can see. */
 async function preflight(ctx: ToolContext, appId: string, primaryLocale: string, version: Resource<AppStoreVersionAttributes>): Promise<string[]> {
   const problems: string[] = [];
@@ -140,10 +153,13 @@ async function preflight(ctx: ToolContext, appId: string, primaryLocale: string,
   if (primary) {
     const sets = await ctx.asc.get<Resource<AppScreenshotSetAttributes>[]>(`/v1/appStoreVersionLocalizations/${primary.id}/appScreenshotSets`, {
       include: "appScreenshots",
-      "limit[appScreenshots]": 1,
+      "limit[appScreenshots]": 10,
     });
-    const withShots = sets.data.filter((s) => (s.relationships?.appScreenshots?.data as unknown[] | undefined)?.length);
-    if (!withShots.length) problems.push(`${primary.attributes?.locale}: no screenshots.`);
+    const shots = sets.data.flatMap((s) => new Included(sets.included).many<AppScreenshotAttributes>(s, "appScreenshots", "appScreenshots"));
+    // Failed or unfinished uploads don't count: they never show on the store.
+    if (!shots.some((s) => s.attributes?.assetDeliveryState?.state === "COMPLETE")) {
+      problems.push(`${primary.attributes?.locale}: no screenshots${shots.length ? " that Apple has finished processing (see list_screenshots)" : ""}.`);
+    }
   }
 
   const infos = await ctx.asc.get<Resource<AppInfoAttributes>[]>(`/v1/apps/${appId}/appInfos`, { include: "appInfoLocalizations,primaryCategory,ageRatingDeclaration" });
@@ -196,12 +212,26 @@ export const submitForReview = defineTool({
       "filter[platform]": platform,
       "filter[state]": [...OPEN_SUBMISSION_STATES, ...ACTIVE_SUBMISSION_STATES].join(","),
     });
-    const active = submissions.data.find((s) => ACTIVE_SUBMISSION_STATES.has(s.attributes?.state ?? ""));
-    if (active) {
-      return `Already submitted: review submission ${active.id} is ${active.attributes?.state} (submitted ${when(active.attributes?.submittedDate)}). Nothing to do.`;
+    // Versions already sent to App Review, so a re-run reports them instead of failing.
+    const sent = [];
+    for (const s of submissions.data.filter((x) => ACTIVE_SUBMISSION_STATES.has(x.attributes?.state ?? ""))) {
+      for (const { versionId, version } of await submissionItems(ctx, s.id)) if (versionId) sent.push({ submission: s, versionId, version });
     }
+    const alreadySubmitted = (s: Resource<ReviewSubmissionAttributes>) =>
+      `Already submitted: review submission ${s.id} is ${s.attributes?.state} (submitted ${when(s.attributes?.submittedDate)}). Nothing to do.`;
 
-    const version = await resolveVersion(ctx, ref.id, { version: args.version, platform, editable: true });
+    let version: Resource<AppStoreVersionAttributes>;
+    try {
+      version = await resolveVersion(ctx, ref.id, { version: args.version, platform, editable: true });
+    } catch (error) {
+      // A version waiting for or in review can't be edited; fine if it's the one asked for.
+      const wanted = args.version?.trim() || "editable";
+      const match = sent.find((x) => wanted === "editable" || x.version?.attributes?.versionString === wanted);
+      if (error instanceof UserError && match) return alreadySubmitted(match.submission);
+      throw error;
+    }
+    const match = sent.find((x) => x.versionId === version.id);
+    if (match) return alreadySubmitted(match.submission);
     log.info(`${ref.name} ${version.attributes?.versionString} (${versionState(version)}, id ${version.id})`);
 
     const problems = await preflight(ctx, ref.id, ref.primaryLocale, version);
@@ -228,10 +258,7 @@ export const submitForReview = defineTool({
     }
 
     if (submission) {
-      const items = await ctx.asc.get<Resource<ReviewSubmissionItemAttributes>[]>(`/v1/reviewSubmissions/${submission.id}/items`, {
-        include: "appStoreVersion",
-      });
-      const hasVersion = items.data.some((i) => relId(i, "appStoreVersion") === version.id);
+      const hasVersion = (await submissionItems(ctx, submission.id)).some((i) => i.versionId === version.id);
       if (hasVersion) log.skip("The version is already in the submission");
       else if (!ctx.dryRun) {
         try {
@@ -266,7 +293,9 @@ export const submitForReview = defineTool({
 export const cancelReviewSubmission = defineTool({
   name: "cancel_review_submission",
   title: "Cancel App Review submission",
-  description: "Withdraws the app's active review submission (waiting for or in review), so the version can be edited again.",
+  description:
+    "Withdraws the app's active review submission (waiting for or in review), so the version can be edited again. " +
+    "If the only submission is a draft that was never sent (READY_FOR_REVIEW, e.g. after a submit_for_review that failed at the last step), takes its items out instead.",
   kind: "destructive",
   input: { app: appInput, platform: platformInput },
   async run(args, ctx) {
@@ -274,10 +303,19 @@ export const cancelReviewSubmission = defineTool({
     const submissions = await ctx.asc.get<Resource<ReviewSubmissionAttributes>[]>("/v1/reviewSubmissions", {
       "filter[app]": ref.id,
       "filter[platform]": args.platform ?? "IOS",
-      "filter[state]": "WAITING_FOR_REVIEW,IN_REVIEW,UNRESOLVED_ISSUES",
+      "filter[state]": "WAITING_FOR_REVIEW,IN_REVIEW,UNRESOLVED_ISSUES,READY_FOR_REVIEW",
     });
-    const s = submissions.data[0];
+    const s = submissions.data.find((x) => x.attributes?.state !== "READY_FOR_REVIEW") ?? submissions.data[0];
     if (!s) return `${ref.name} has no review submission to cancel.`;
+    if (s.attributes?.state === "READY_FOR_REVIEW") {
+      // A draft was never sent to Apple, so there's nothing to withdraw; removing its items frees the version.
+      const items = await submissionItems(ctx, s.id);
+      if (!items.length) return `${ref.name} has only an empty draft review submission (${s.id}); nothing to cancel.`;
+      const what = `${plural(items.length, "item")} (${items.map((i) => (i.version ? `version ${i.version.attributes?.versionString}` : i.item.id)).join(", ")})`;
+      if (ctx.dryRun) return `Would remove ${what} from draft review submission ${s.id}, which was never sent to App Review.`;
+      for (const { item } of items) await ctx.asc.deleteIfExists(`/v1/reviewSubmissionItems/${item.id}`);
+      return `Removed ${what} from draft review submission ${s.id}, which was never sent to App Review. Submit again with submit_for_review.`;
+    }
     if (ctx.dryRun) return `Would cancel review submission ${s.id} (${s.attributes?.state}, submitted ${when(s.attributes?.submittedDate)}).`;
     await ctx.asc.patch(`/v1/reviewSubmissions/${s.id}`, { data: { type: "reviewSubmissions", id: s.id, attributes: { canceled: true } } });
     return `Cancelling review submission ${s.id}. Apple moves it to CANCELING and then back to editable; check with get_app_status.`;

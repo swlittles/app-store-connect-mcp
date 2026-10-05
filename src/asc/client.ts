@@ -155,6 +155,8 @@ export class AscClient {
       next = doc.links?.next;
       q = undefined; // links.next already carries the query
     }
+    // Never return a partial list as if it were complete: callers use these to decide what exists.
+    if (next) throw new Error(`${path} has more than ${MAX_PAGES} pages; narrow the query.`);
     return { data, included };
   }
 

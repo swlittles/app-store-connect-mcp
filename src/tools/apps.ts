@@ -54,9 +54,11 @@ export const getAppStatus = defineTool({
       ctx.asc
         .get<Resource<BuildUploadAttributes>[]>(`/v1/apps/${ref.id}/buildUploads`, { sort: "-uploadedDate", limit: 5 })
         .catch(() => undefined),
+      // Apple doesn't sort this list, so ask for the open ones rather than taking the first few.
       ctx.asc.get<Resource<ReviewSubmissionAttributes>[]>("/v1/reviewSubmissions", {
         "filter[app]": ref.id,
-        limit: 5,
+        "filter[state]": "READY_FOR_REVIEW,WAITING_FOR_REVIEW,IN_REVIEW,UNRESOLVED_ISSUES,CANCELING,COMPLETING",
+        limit: 20,
       }),
     ]);
 
@@ -87,10 +89,9 @@ export const getAppStatus = defineTool({
       }
     }
 
-    const open = submissions.data.filter((s) => s.attributes?.state !== "COMPLETE");
-    out.push("", "Review submissions:");
+    out.push("", "Open review submissions:");
     if (!submissions.data.length) out.push("- none");
-    for (const s of open.length ? open : submissions.data.slice(0, 2)) {
+    for (const s of submissions.data) {
       out.push(`- ${s.attributes?.platform} · ${s.attributes?.state} · submitted ${when(s.attributes?.submittedDate)} · id ${s.id}`);
     }
     return out.join("\n");

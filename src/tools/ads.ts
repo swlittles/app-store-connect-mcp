@@ -189,21 +189,26 @@ async function listingTerms(ctx: ToolContext, app: string | undefined, locale: s
   const infoLoc = included
     .many<AppInfoLocalizationAttributes>(info, "appInfoLocalizations", "appInfoLocalizations")
     .find((l) => l.attributes?.locale === wanted);
-  const nameTerms = [infoLoc?.attributes?.name, infoLoc?.attributes?.subtitle].filter((t): t is string => Boolean(t?.trim()));
+  const nameTerms = [infoLoc?.attributes?.name, infoLoc?.attributes?.subtitle].map((t) => normalizePhrase(t ?? "")).filter(Boolean);
   const nameWords = new Set(nameTerms.flatMap((t) => t.toLowerCase().split(/[^\p{L}\p{N}]+/u)).filter(Boolean));
   return {
     label: `${ref.name} ${version.attributes?.versionString} (${wanted})`,
     keywordField,
-    keywords: keywordField.split(",").map((k) => k.trim()).filter(Boolean),
+    keywords: keywordField.split(",").map(normalizePhrase).filter(Boolean),
     nameTerms,
     nameWords,
   };
 }
 
+/** Trims and collapses inner whitespace, so table rows match the phrases lookupPhrases sent. */
+function normalizePhrase(phrase: string): string {
+  return phrase.trim().replace(/\s+/g, " ");
+}
+
 function dedupe(phrases: string[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const p of phrases.map((x) => x.trim().replace(/\s+/g, " ")).filter(Boolean)) {
+  for (const p of phrases.map(normalizePhrase).filter(Boolean)) {
     if (!seen.has(p.toLowerCase())) {
       seen.add(p.toLowerCase());
       out.push(p);
@@ -250,7 +255,7 @@ export const searchTermTrends = defineTool({
     term: z.string().optional().describe("Only terms matching this text."),
     match: z.enum(["contains", "starts_with", "equals"]).default("contains"),
     granularity: z.enum(["weekly", "monthly"]).default("weekly"),
-    start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe("YYYY-MM-DD; weekly ranges start on a Sunday. Default: the last full week or month (UTC)."),
+    start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe("YYYY-MM-DD; weekly ranges start on a Sunday. Default: the latest week or month Apple has published."),
     end: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
     sort: z.enum(["rank", "popularity"]).default("rank"),
     limit: z.number().int().min(1).max(1000).default(50),
@@ -273,7 +278,12 @@ export const searchTermTrends = defineTool({
     });
     const rows = res.result?.rows ?? [];
     const head = `${args.genre} in ${args.country.toUpperCase()}, ${args.granularity} ${range.start} to ${range.end}${args.term ? `, terms ${args.match.replace("_", " ")} "${args.term}"` : ""}`;
-    if (!rows.length) return `${head}: no terms. Apple only reports about the top 500 terms per genre and country, so a less popular term won't appear.`;
+    if (!rows.length) {
+      // Weekly data is published Mondays 07:00 UTC and monthly data around the 5th, so a recent range may not be out yet.
+      const recent = ctx.now() - Date.parse(`${range.end}T00:00:00Z`) < 8 * 86_400_000;
+      const unpublished = recent ? " Apple publishes weekly data on Mondays and monthly data around the 5th, so this range may not be out yet; try an earlier one." : "";
+      return `${head}: no terms.${unpublished} Apple only reports about the top 500 terms per genre and country, so a less popular term won't appear.`;
+    }
     return [
       `${head}: ${plural(rows.length, "term")}`,
       "  rank  pop/100  in genre  tier  term",
@@ -287,29 +297,45 @@ export const searchTermTrends = defineTool({
   },
 });
 
-/** The requested range, or the last full Sun-Sat week / calendar month in UTC. */
+/**
+ * The requested range, or the latest published one: Apple publishes a Sun-Sat week on Monday at
+ * 07:00 UTC (31 hours after it ends) and a month on the 5th (UTC), so the defaults skip ranges
+ * that aren't out yet.
+ */
 export function timeRange(granularity: "weekly" | "monthly", start: string | undefined, end: string | undefined, now: number) {
   const day = (d: Date) => d.toISOString().slice(0, 10);
+  const s = start === undefined ? undefined : parseDay(start, "start");
+  if (end) parseDay(end, "end");
   if (granularity === "weekly") {
-    if (start) {
-      if (new Date(`${start}T00:00:00Z`).getUTCDay() !== 0) throw new UserError(`Weekly ranges start on a Sunday; ${start} isn't one.`);
-      const e = end ?? day(new Date(Date.parse(`${start}T00:00:00Z`) + 6 * 86_400_000));
+    if (start && s) {
+      if (s.getUTCDay() !== 0) throw new UserError(`Weekly ranges start on a Sunday; ${start} isn't one.`);
+      const e = end ?? day(new Date(s.getTime() + 6 * 86_400_000));
       return { start, end: e, granularity: "WEEKLY_SUN_SAT" };
     }
-    const today = new Date(now);
-    const lastSaturday = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() - ((today.getUTCDay() + 1) % 7 || 7)));
-    const sunday = new Date(lastSaturday.getTime() - 6 * 86_400_000);
-    return { start: day(sunday), end: day(lastSaturday), granularity: "WEEKLY_SUN_SAT" };
+    // The latest week whose end (the following Sunday 00:00) is at least 31 hours ago.
+    const cutoff = new Date(now - 31 * 3_600_000);
+    const nextSunday = Date.UTC(cutoff.getUTCFullYear(), cutoff.getUTCMonth(), cutoff.getUTCDate() - cutoff.getUTCDay());
+    return { start: day(new Date(nextSunday - 7 * 86_400_000)), end: day(new Date(nextSunday - 86_400_000)), granularity: "WEEKLY_SUN_SAT" };
   }
-  if (start) {
-    const s = new Date(`${start}T00:00:00Z`);
+  if (start && s) {
     const e = end ?? day(new Date(Date.UTC(s.getUTCFullYear(), s.getUTCMonth() + 1, 0)));
     return { start, end: e, granularity: "MONTHLY" };
   }
+  // Last month, or the one before until the 6th, to be safe about the 5th's publication.
   const today = new Date(now);
-  const first = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - 1, 1));
-  const last = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 0));
+  const back = today.getUTCDate() < 6 ? 2 : 1;
+  const first = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - back, 1));
+  const last = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - back + 1, 0));
   return { start: day(first), end: day(last), granularity: "MONTHLY" };
+}
+
+/** Parses YYYY-MM-DD, rejecting dates that don't exist (2026-02-29, 2026-13-01) instead of rolling them over. */
+function parseDay(value: string, name: string): Date {
+  const d = new Date(`${value}T00:00:00Z`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== value) {
+    throw new UserError(`${name} ${value} isn't a valid date (YYYY-MM-DD).`);
+  }
+  return d;
 }
 
 // ---------------------------------------------------------------------------------------------

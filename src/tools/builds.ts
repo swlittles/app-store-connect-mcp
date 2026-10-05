@@ -454,30 +454,37 @@ export const uploadBuild = defineTool({
       },
     });
     const uploadId = created!.data.id;
-    const reserved = await ctx.asc.post<Resource<BuildUploadFileAttributes>>("/v1/buildUploadFiles", {
-      data: {
-        type: "buildUploadFiles",
-        attributes: { fileName: file.fileName, fileSize: file.size, uti: ext === ".pkg" ? "com.apple.pkg" : "com.apple.ipa", assetType: "ASSET" },
-        relationships: { buildUpload: linkage("buildUploads", uploadId) },
-      },
-    });
-    const fileId = reserved!.data.id;
-    const operations = reserved!.data.attributes?.uploadOperations ?? [];
-    log.done(`Reserved upload ${uploadId} (${plural(operations.length, "part")})`);
-    await performUploadOperations(operations, file.path, {
-      fetch: ctx.asc.fetcher,
-      signal: ctx.signal,
-      sleep: ctx.sleep,
-      onPart: (n, total) => void ctx.progress(`Uploaded part ${n} of ${total}`, n, total),
-    });
-    log.done("Sent the file");
-    await ctx.asc.patch(`/v1/buildUploadFiles/${fileId}`, {
-      data: {
-        type: "buildUploadFiles",
-        id: fileId,
-        attributes: { uploaded: true, sourceFileChecksums: { file: { hash: file.md5, algorithm: "MD5" } } },
-      },
-    });
+    try {
+      const reserved = await ctx.asc.post<Resource<BuildUploadFileAttributes>>("/v1/buildUploadFiles", {
+        data: {
+          type: "buildUploadFiles",
+          attributes: { fileName: file.fileName, fileSize: file.size, uti: ext === ".pkg" ? "com.apple.pkg" : "com.apple.ipa", assetType: "ASSET" },
+          relationships: { buildUpload: linkage("buildUploads", uploadId) },
+        },
+      });
+      const fileId = reserved!.data.id;
+      const operations = reserved!.data.attributes?.uploadOperations ?? [];
+      log.done(`Reserved upload ${uploadId} (${plural(operations.length, "part")})`);
+      await performUploadOperations(operations, file.path, {
+        fetch: ctx.asc.fetcher,
+        signal: ctx.signal,
+        sleep: ctx.sleep,
+        onPart: (n, total) => void ctx.progress(`Uploaded part ${n} of ${total}`, n, total),
+      });
+      log.done("Sent the file");
+      await ctx.asc.patch(`/v1/buildUploadFiles/${fileId}`, {
+        data: {
+          type: "buildUploadFiles",
+          id: fileId,
+          attributes: { uploaded: true, sourceFileChecksums: { file: { hash: file.md5, algorithm: "MD5" } } },
+        },
+      });
+    } catch (error) {
+      // Discard this attempt, or a re-run would see a recent unfinished upload and wait an hour.
+      await ctx.asc.deleteIfExists(`/v1/buildUploads/${uploadId}`).catch(() => {});
+      if (ctx.signal?.aborted) throw error;
+      throw new UserError(`Uploading ${version} (${buildNumber}) failed, and the attempt was discarded: ${error instanceof Error ? error.message : String(error)}. Run upload_build again.`);
+    }
     log.done("Committed the upload");
     return finish(log, await afterUpload(ctx, ref.id, { build: buildNumber, version, platform }, args.wait_minutes, uploadId));
   },

@@ -49,7 +49,7 @@ export const replyToReview = defineTool({
   name: "reply_to_review",
   title: "Reply to a customer review",
   description:
-    "Publishes a developer reply to a customer review. Replies are public, so this is a dry run until confirmed. A review has at most one reply; to change an existing one pass replace: true, which deletes the old reply and posts the new one.",
+    "Publishes a developer reply to a customer review. Replies are public, so this is a dry run until confirmed. A review has at most one reply; to change an existing one pass replace: true, which overwrites it.",
   kind: "destructive",
   input: {
     review_id: z.string().describe("Review ID from get_reviews."),
@@ -68,7 +68,7 @@ export const replyToReview = defineTool({
       return `${label} already has a reply (${existing.attributes?.state}): "${truncate(existing.attributes?.responseBody, 300)}"\nPass replace: true to replace it.`;
     }
     if (ctx.dryRun) return `Would ${existing ? "replace the reply to" : "reply to"} ${label} with: "${truncate(args.text, 300)}"`;
-    if (existing) await ctx.asc.deleteIfExists(`/v1/customerReviewResponses/${existing.id}`);
+    // Apple overwrites an existing reply on POST. Deleting first would leave no reply if the POST failed.
     const created = await ctx.asc.post<Resource<CustomerReviewResponseAttributes>>("/v1/customerReviewResponses", {
       data: { type: "customerReviewResponses", attributes: { responseBody: args.text }, relationships: { review: linkage("customerReviews", args.review_id) } },
     });
@@ -95,7 +95,7 @@ export const downloadReport = defineTool({
     report_sub_type: z.enum(["SUMMARY", "DETAILED", "SUMMARY_INSTALL_TYPE", "SUMMARY_TERRITORY", "SUMMARY_CHANNEL"]).default("SUMMARY"),
     frequency: z.enum(["DAILY", "WEEKLY", "MONTHLY", "YEARLY"]).default("DAILY"),
     version: z.string().optional().describe("Report format version, e.g. 1_0 or 1_4. Apple's error says which version it wants if this is wrong."),
-    region_code: z.string().default("ZZ").describe("Finance only: region, e.g. US, EU, or ZZ for all (Z1 for FINANCE_DETAIL)."),
+    region_code: z.string().optional().describe("Finance only: region, e.g. US, EU. Default: ZZ (all regions) for FINANCIAL, Z1 for FINANCE_DETAIL, which only accepts Z1."),
     vendor_number: z.string().optional(),
     save_to: z.string().optional().describe("Absolute path to save the uncompressed TSV."),
     rows: z.number().int().min(0).max(200).default(20).describe("How many rows to show."),
@@ -104,11 +104,12 @@ export const downloadReport = defineTool({
     const vendor = args.vendor_number ?? ctx.config.vendorNumber;
     if (!vendor) throw new UserError("Pass vendor_number or set ASC_VENDOR_NUMBER (App Store Connect > Payments and Financial Reports, top left).");
     const finance = args.kind === "finance";
+    const financeType = args.report_type ?? "FINANCIAL";
     const query = finance
       ? {
           "filter[vendorNumber]": vendor,
-          "filter[reportType]": args.report_type ?? "FINANCIAL",
-          "filter[regionCode]": args.region_code,
+          "filter[reportType]": financeType,
+          "filter[regionCode]": args.region_code ?? (financeType === "FINANCE_DETAIL" ? "Z1" : "ZZ"),
           "filter[reportDate]": args.report_date,
         }
       : {

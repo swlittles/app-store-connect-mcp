@@ -143,6 +143,12 @@ describe("AscClient", () => {
     expect(calls[1]!.url).toContain("cursor=AQ");
   });
 
+  it("refuses to return a partial list when there are too many pages", async () => {
+    const page = () => json(200, { data: [{ type: "apps", id: "1" }], links: { next: "https://api.appstoreconnect.apple.com/v1/apps?cursor=AQ&limit=1" } });
+    const { asc } = client(Array.from({ length: 100 }, page));
+    await expect(asc.getAll("/v1/apps", { limit: 1 })).rejects.toThrow(/more than 100 pages/);
+  });
+
   it("refuses to send the token to another host", async () => {
     const { asc, calls } = client([json(200, { data: [] })]);
     await expect(asc.get("https://evil.example/v1/apps")).rejects.toThrow(/Refusing/);

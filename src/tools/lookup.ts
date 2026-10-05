@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { AscApiError, type Resource } from "../asc/client.js";
-import { Included } from "../asc/jsonapi.js";
+import { Included, relId } from "../asc/jsonapi.js";
 import type {
   AppAttributes,
   AppStoreVersionAttributes,
@@ -59,29 +59,33 @@ export async function resolveApp(ctx: ToolContext, app?: string): Promise<AppRef
         `Which app? Pass app (or set ASC_APP_ID). This key can see:\n${data.map((a) => `- ${a.attributes?.name} (id ${a.id}, ${a.attributes?.bundleId})`).join("\n")}`,
       );
     }
-  } else if (/^\d+$/.test(wanted)) {
-    try {
-      const doc = await ctx.asc.get<Resource<AppAttributes>>(`/v1/apps/${wanted}`, { "fields[apps]": APP_FIELDS });
-      ref = toAppRef(doc.data);
-    } catch (error) {
-      if (error instanceof AscApiError && error.status === 404) throw new UserError(`No app with ID ${wanted} is visible to this API key.`);
-      throw error;
-    }
   } else {
-    const byBundle = await ctx.asc.get<Resource<AppAttributes>[]>("/v1/apps", { "filter[bundleId]": wanted, "fields[apps]": APP_FIELDS });
-    const exactBundle = byBundle.data.find((a) => a.attributes?.bundleId === wanted);
-    if (exactBundle) ref = toAppRef(exactBundle);
-    else {
-      const byName = await ctx.asc.get<Resource<AppAttributes>[]>("/v1/apps", { "filter[name]": wanted, "fields[apps]": APP_FIELDS });
-      const exact = byName.data.filter((a) => a.attributes?.name?.toLowerCase() === wanted.toLowerCase());
-      const matches = exact.length ? exact : byName.data;
-      if (matches.length === 1) ref = toAppRef(matches[0]!);
-      else if (matches.length === 0) throw new UserError(`No app matches "${wanted}". Call list_apps to see the apps this key can access.`);
-      else throw new UserError(`"${wanted}" matches several apps: ${matches.map((a) => `${a.attributes?.name} (id ${a.id})`).join(", ")}. Pass the app ID.`);
-    }
+    ref = (/^\d+$/.test(wanted) && (await appById(ctx, wanted))) || (await appByBundleOrName(ctx, wanted));
   }
   appCache.set(key, ref);
   return ref;
+}
+
+/** Undefined when there's no such app, so an all-digit name (an app called "2048") can still match by name. */
+async function appById(ctx: ToolContext, id: string): Promise<AppRef | undefined> {
+  try {
+    return toAppRef((await ctx.asc.get<Resource<AppAttributes>>(`/v1/apps/${id}`, { "fields[apps]": APP_FIELDS })).data);
+  } catch (error) {
+    if (error instanceof AscApiError && error.status === 404) return undefined;
+    throw error;
+  }
+}
+
+async function appByBundleOrName(ctx: ToolContext, wanted: string): Promise<AppRef> {
+  const byBundle = await ctx.asc.get<Resource<AppAttributes>[]>("/v1/apps", { "filter[bundleId]": wanted, "fields[apps]": APP_FIELDS });
+  const exactBundle = byBundle.data.find((a) => a.attributes?.bundleId === wanted);
+  if (exactBundle) return toAppRef(exactBundle);
+  const byName = await ctx.asc.get<Resource<AppAttributes>[]>("/v1/apps", { "filter[name]": wanted, "fields[apps]": APP_FIELDS });
+  const exact = byName.data.filter((a) => a.attributes?.name?.toLowerCase() === wanted.toLowerCase());
+  const matches = exact.length ? exact : byName.data;
+  if (matches.length === 1) return toAppRef(matches[0]!);
+  if (matches.length === 0) throw new UserError(`No app matches "${wanted}". Call list_apps to see the apps this key can access.`);
+  throw new UserError(`"${wanted}" matches several apps: ${matches.map((a) => `${a.attributes?.name} (id ${a.id})`).join(", ")}. Pass the app ID.`);
 }
 
 /** For tests. */
@@ -129,11 +133,6 @@ export function isResourceId(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 }
 
-export async function getBuildById(ctx: ToolContext, id: string): Promise<BuildInfo> {
-  const doc = await ctx.asc.get<Resource<BuildAttributes>>(`/v1/builds/${id}`, { include: BUILD_INCLUDE });
-  return toBuildInfo(doc.data, new Included(doc.included));
-}
-
 /**
  * Finds a build by number, ID or "latest". Returns undefined if Apple doesn't know the build yet
  * (it may still be in the upload pipeline; see describeMissingBuild).
@@ -142,7 +141,10 @@ export async function findBuild(ctx: ToolContext, appId: string, q: BuildQuery):
   const wanted = q.build?.trim() || "latest";
   if (isResourceId(wanted)) {
     try {
-      return await getBuildById(ctx, wanted);
+      const doc = await ctx.asc.get<Resource<BuildAttributes>>(`/v1/builds/${wanted}`, { include: `${BUILD_INCLUDE},app`, "fields[apps]": "bundleId" });
+      const owner = relId(doc.data, "app");
+      if (owner && owner !== appId) throw new UserError(`Build ${wanted} belongs to a different app (id ${owner}). Pass that app, or a build of this one.`);
+      return toBuildInfo(doc.data, new Included(doc.included));
     } catch (error) {
       if (error instanceof AscApiError && error.status === 404) return undefined;
       throw error;
@@ -152,14 +154,16 @@ export async function findBuild(ctx: ToolContext, appId: string, q: BuildQuery):
     "filter[app]": appId,
     include: BUILD_INCLUDE,
     sort: "-uploadedDate",
-    limit: 5,
+    limit: q.platform ? 5 : 20,
   };
   if (wanted !== "latest") query["filter[version]"] = wanted;
   if (q.platform) query["filter[preReleaseVersion.platform]"] = q.platform;
   if (q.version) query["filter[preReleaseVersion.version]"] = q.version;
   const doc = await ctx.asc.get<Resource<BuildAttributes>[]>("/v1/builds", query);
-  const first = doc.data[0];
-  return first ? toBuildInfo(first, new Included(doc.included)) : undefined;
+  const builds = doc.data.map((b) => toBuildInfo(b, new Included(doc.included)));
+  // Without a platform, prefer iOS: Mac builds often share the iOS build number or are newer. Apps
+  // with no iOS builds still get their newest build.
+  return q.platform ? builds[0] : (builds.find((b) => (b.preRelease?.attributes?.platform ?? "IOS") === "IOS") ?? builds[0]);
 }
 
 export async function requireBuild(ctx: ToolContext, appId: string, q: BuildQuery): Promise<BuildInfo> {
@@ -171,7 +175,12 @@ export async function requireBuild(ctx: ToolContext, appId: string, q: BuildQuer
 /** Explains why a build isn't there yet, using the build upload pipeline's state if it can. */
 export async function describeMissingBuild(ctx: ToolContext, appId: string, q: BuildQuery): Promise<string> {
   const build = q.build;
-  if (!build || build === "latest") return "This app has no builds yet. Upload one with upload_build (or Xcode/Transporter).";
+  const filters = [q.version && `version ${q.version}`, q.platform && q.platform].filter(Boolean).join(", ");
+  if (!build || build === "latest") {
+    return filters
+      ? `This app has no builds matching ${filters}. Check the version and platform, or upload one with upload_build.`
+      : "This app has no builds yet. Upload one with upload_build (or Xcode/Transporter).";
+  }
   if (!isResourceId(build)) {
     try {
       const uploads = await ctx.asc.get<Resource<BuildUploadAttributes>[]>(`/v1/apps/${appId}/buildUploads`, {
@@ -194,7 +203,7 @@ export async function describeMissingBuild(ctx: ToolContext, appId: string, q: B
       // The upload lookup is a nicety; fall through to the generic message.
     }
   }
-  return `No build ${build} found. If it was uploaded in the last few minutes, Apple may not have registered it yet; call get_build with wait_minutes to wait.`;
+  return `No build ${build}${filters ? ` (${filters})` : ""} found. If it was uploaded in the last few minutes, Apple may not have registered it yet; call get_build with wait_minutes to wait.`;
 }
 
 export function buildSummary(info: BuildInfo): string {
@@ -215,9 +224,13 @@ export function buildSummary(info: BuildInfo): string {
 // ---------------------------------------------------------------------------------------------
 // App Store versions
 
-/** Version states in which metadata, screenshots and the build can still be changed. */
+/**
+ * Version states in which metadata, screenshots and the build can still be changed.
+ * READY_FOR_REVIEW is a version in a draft review submission that hasn't been sent yet.
+ */
 export const EDITABLE_VERSION_STATES = new Set([
   "PREPARE_FOR_SUBMISSION",
+  "READY_FOR_REVIEW",
   "DEVELOPER_REJECTED",
   "REJECTED",
   "METADATA_REJECTED",
@@ -280,7 +293,7 @@ export async function resolveVersion(
   if (options.editable && !EDITABLE_VERSION_STATES.has(versionState(found))) {
     throw new UserError(
       `Version ${found.attributes?.versionString} is ${versionState(found)}, so it can't be edited. ` +
-        "Only versions in PREPARE_FOR_SUBMISSION (or rejected) can change; create a new version with prepare_version.",
+        "Only versions in PREPARE_FOR_SUBMISSION, READY_FOR_REVIEW (not yet submitted) or rejected can change; create a new version with prepare_version.",
     );
   }
   return found;

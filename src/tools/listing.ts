@@ -88,6 +88,8 @@ async function upsert(
     changes: Attributes;
     createAttributes?: Attributes;
     relationships?: Record<string, { data: Linkage }>;
+    /** Attributes Apple wants in every update: sent with their current value when anything changes. */
+    sendAlways?: readonly string[];
   },
 ): Promise<boolean> {
   const current = options.existing?.attributes ?? {};
@@ -118,8 +120,9 @@ async function upsert(
   if (ctx.dryRun) return true;
   try {
     if (options.existing) {
+      const always = Object.fromEntries((options.sendAlways ?? []).filter((k) => current[k] !== undefined).map((k) => [k, current[k]]));
       await ctx.asc.patch(`/v1/${options.type}/${options.existing.id}`, {
-        data: { type: options.type, id: options.existing.id, attributes: changed },
+        data: { type: options.type, id: options.existing.id, attributes: { ...always, ...changed } },
       });
     } else {
       await ctx.asc.post(`/v1/${options.type}`, {
@@ -496,7 +499,9 @@ export const updateAgeRating = defineTool({
       );
     }
     const log = new StepLog();
-    await upsert(ctx, log, { type: "ageRatingDeclarations", label: "Age rating", existing: declaration as Resource<Attributes>, changes });
+    // Apple wants every answer in each update, not just the changed ones.
+    const sendAlways = declaration.attributes?.socialMedia != null ? [...REQUIRED_AGE_QUESTIONS, "socialMedia"] : REQUIRED_AGE_QUESTIONS;
+    await upsert(ctx, log, { type: "ageRatingDeclarations", label: "Age rating", existing: declaration as Resource<Attributes>, changes, sendAlways });
     return [ref.name, STEP_LEGEND, log.toString()].join("\n");
   },
 });
