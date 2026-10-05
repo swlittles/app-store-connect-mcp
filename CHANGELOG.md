@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 - Optional Apple Ads keyword research through the Apple Ads Platform API: `ads_status`, `keyword_popularity`, `search_term_trends` and `keyword_suggestions`.
   - All read-only. They're offered when the `ADS_*` variables are set, and work without App Store Connect credentials.
