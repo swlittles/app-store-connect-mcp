@@ -31,7 +31,7 @@ describe("selectTools", () => {
 
   it("ASC_TOOLS=read leaves only tools that can't change anything", () => {
     const tools = selectTools({ ASC_TOOLS: "read" }, TOOLS).tools;
-    expect(tools.length).toBe(11);
+    expect(tools.length).toBe(12);
     expect(tools.every((t) => t.kind === "read" && !t.gatesOwnWrites)).toBe(true);
   });
 
@@ -69,7 +69,7 @@ describe("over MCP", () => {
     await Promise.all([server.connect(a), client.connect(b)]);
 
     const listed = (await client.listTools()).tools.map((t) => t.name);
-    expect(listed).toHaveLength(10);
+    expect(listed).toHaveLength(11);
     expect(listed).not.toContain("distribute_build");
     expect(client.getInstructions()).toContain("turned off these tools");
     const call = await client.callTool({ name: "distribute_build", arguments: {} }).catch((error: Error) => ({ isError: true, content: [{ type: "text", text: error.message }] }));

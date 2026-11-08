@@ -27,12 +27,16 @@ export interface Runtime {
   ads?(): AdsClient;
   sleep(ms: number): Promise<void>;
   now(): number;
+  /** fetch for Apple's public, unauthenticated endpoints (e.g. the App Store lookup). Defaults to global fetch. */
+  fetch?: typeof fetch;
 }
 
 export interface ToolContext extends Services {
   /** Apple Ads client; only available to tools with requires: "ads". */
   ads: AdsClient;
   signal: AbortSignal;
+  /** fetch for Apple's public endpoints; never sends the API token. */
+  fetch: typeof fetch;
   sleep(ms: number): Promise<void>;
   now(): number;
   /** Sends an MCP progress notification if the client asked for them. Never throws. */
@@ -143,6 +147,7 @@ export async function invoke(
     const ctx = Object.defineProperties(
       {
         signal: extra.signal ?? new AbortController().signal,
+        fetch: runtime.fetch ?? ((input: Parameters<typeof fetch>[0], init?: RequestInit) => fetch(input, init)),
         sleep: runtime.sleep,
         now: runtime.now,
         progress: extra.progress ?? (async () => {}),
