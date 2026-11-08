@@ -16,6 +16,8 @@ export type ToolKind = "read" | "write" | "destructive";
 export interface Services {
   asc: AscClient;
   config: Config;
+  /** Client for the optional reports key (ASC_REPORTS_KEY_ID); download_report prefers it. */
+  reportsAsc?: AscClient;
 }
 
 export interface Runtime {
@@ -149,6 +151,7 @@ export async function invoke(
       {
         asc: { get: () => (services ?? runtime.services()).asc },
         config: { get: () => (services ?? runtime.services()).config },
+        reportsAsc: { get: () => (services ?? runtime.services()).reportsAsc },
         ads: { get: () => ads ?? adsClient(runtime) },
       },
     ) as ToolContext;

@@ -13,7 +13,15 @@ export interface Config {
   write: boolean;
   defaultAppId?: string;
   vendorNumber?: string;
+  /** Optional second key used only by download_report (Sales and Reports or Finance role). */
+  reports?: ReportsKey;
   baseUrl: string;
+}
+
+export interface ReportsKey {
+  keyId: string;
+  issuerId?: string;
+  privateKey: KeyObject;
 }
 
 export class ConfigError extends Error {
@@ -39,6 +47,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
 
   const privateKey = readEcKey(env, "ASC_KEY", "ASC_KEY_PATH", "the .p8 file App Store Connect gave you");
+  const reports = loadReportsKey(env, issuerId);
 
   return {
     keyId: keyId!,
@@ -47,8 +56,26 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     write: isTruthy(env.ASC_WRITE),
     defaultAppId: env.ASC_APP_ID?.trim() || undefined,
     vendorNumber: env.ASC_VENDOR_NUMBER?.trim() || undefined,
+    reports,
     // Pinned: the token must only ever go to Apple.
     baseUrl: DEFAULT_BASE_URL,
+  };
+}
+
+/**
+ * Reads the optional reports key (ASC_REPORTS_KEY_ID plus ASC_REPORTS_KEY_PATH or ASC_REPORTS_KEY).
+ * Its issuer defaults to the main key's. Half a configuration is an error rather than silently ignored.
+ */
+function loadReportsKey(env: NodeJS.ProcessEnv, mainIssuerId: string | undefined): ReportsKey | undefined {
+  const keyId = env.ASC_REPORTS_KEY_ID?.trim();
+  const hasKey = Boolean(env.ASC_REPORTS_KEY_PATH || env.ASC_REPORTS_KEY);
+  if (!keyId && !hasKey) return undefined;
+  if (!keyId) throw new ConfigError("ASC_REPORTS_KEY_PATH (or ASC_REPORTS_KEY) is set but ASC_REPORTS_KEY_ID isn't. Set both, or neither.");
+  if (!hasKey) throw new ConfigError("ASC_REPORTS_KEY_ID is set but ASC_REPORTS_KEY_PATH (or ASC_REPORTS_KEY) isn't. Set both, or neither.");
+  return {
+    keyId,
+    issuerId: env.ASC_REPORTS_ISSUER_ID?.trim() || mainIssuerId,
+    privateKey: readEcKey(env, "ASC_REPORTS_KEY", "ASC_REPORTS_KEY_PATH", "the .p8 file of a Sales and Reports or Finance key"),
   };
 }
 

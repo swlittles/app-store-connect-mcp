@@ -63,6 +63,18 @@ describe("loadConfig", () => {
     expect(config.defaultAppId).toBe("123");
   });
 
+  it("reads an optional reports key that inherits the issuer", () => {
+    const config = loadConfig({ ASC_KEY_ID: "MAIN", ASC_ISSUER_ID: "issuer", ASC_KEY: pem, ASC_REPORTS_KEY_ID: "REPORTS", ASC_REPORTS_KEY: pem });
+    expect(config.reports?.keyId).toBe("REPORTS");
+    expect(config.reports?.issuerId).toBe("issuer");
+    expect(loadConfig({ ASC_KEY_ID: "MAIN", ASC_KEY: pem }).reports).toBeUndefined();
+  });
+
+  it("refuses half a reports key", () => {
+    expect(() => loadConfig({ ASC_KEY_ID: "MAIN", ASC_KEY: pem, ASC_REPORTS_KEY_ID: "REPORTS" })).toThrow(/ASC_REPORTS_KEY_PATH/);
+    expect(() => loadConfig({ ASC_KEY_ID: "MAIN", ASC_KEY: pem, ASC_REPORTS_KEY_PATH: "/nope.p8" })).toThrow(/ASC_REPORTS_KEY_ID isn't/);
+  });
+
   it("explains what's missing", () => {
     expect(() => loadConfig({})).toThrow(/ASC_KEY_ID and ASC_KEY_PATH/);
   });

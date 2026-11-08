@@ -101,6 +101,7 @@ Then ask for things in plain language:
 | `ASC_WRITE` | `1` allows changes. Without it the server is read-only: write tools refuse, but still return plans when called with `dry_run: true`. |
 | `ASC_APP_ID` | Default app, as an app ID, bundle ID or exact name. If it's unset and the key can see only one app, that app is used. |
 | `ASC_VENDOR_NUMBER` | Vendor number for `download_report` (shown in Payments and Financial Reports). |
+| `ASC_REPORTS_KEY_ID`, `ASC_REPORTS_KEY_PATH` (or `ASC_REPORTS_KEY`) | Optional second key used only by `download_report`, so the main key can stay App Manager. Give it the **Finance** role (sales and finance reports) or **Sales and Reports** (sales only). `ASC_REPORTS_ISSUER_ID` defaults to `ASC_ISSUER_ID`. |
 | `ASC_TOOLS` | Only offer these tools or groups. Default: all. See [Turning tools off](#turning-tools-off). |
 | `ASC_DISABLED_TOOLS` | Never offer these tools or groups. |
 | `ASC_AUTO_UPDATE` | `0` turns off automatic updates. On by default. |
@@ -240,8 +241,10 @@ Use **App Manager** unless you have a reason not to. Step-by-step instructions a
 | **App Manager** | Everything here except sales and finance reports. Recommended. |
 | **Marketing** | Listing metadata and screenshots, if that's all the agent should touch. |
 | **Customer Support** | Reading and replying to customer reviews. |
-| **Finance** or **Sales** | `download_report`. |
+| **Finance** or **Sales and Reports** | `download_report`. Finance reads sales and finance reports; Sales and Reports reads sales reports only. Neither can change anything through the API. |
 | **Admin** | Never needed. Don't use it: an Admin key can manage users and other keys. |
+
+Reports need a different role from everything else, so you can give the server two keys: an App Manager key as `ASC_KEY_ID` / `ASC_KEY_PATH`, and a Finance key as `ASC_REPORTS_KEY_ID` / `ASC_REPORTS_KEY_PATH`. `download_report` uses the reports key, and every other tool uses the main one. Apple doesn't let you add roles to an existing key, so create a new one.
 
 If a tool needs more access than the key has, the error says so. Keep keys out of repositories: store the `.p8` somewhere like `~/.appstoreconnect/` with `chmod 600`, and revoke any key you think has leaked under Users and Access.
 

@@ -2,6 +2,9 @@ import { gzipSync } from "node:zlib";
 import { beforeEach, describe, expect, it } from "vitest";
 import { LOC_ID, seedApp, seedTestFlight, seedVersion, VERSION_ID } from "./helpers/fixtures.js";
 import { APP_ID, makeHarness, type Harness } from "./helpers/harness.js";
+import type { AscClient } from "../src/asc/client.js";
+import { invoke, type Runtime } from "../src/tools/framework.js";
+import { downloadReport } from "../src/tools/reviews.js";
 import { AGE_RATING_LEVEL_QUESTIONS, AGE_RATING_YES_NO_QUESTIONS } from "../src/tools/listing.js";
 
 let h: Harness;
@@ -366,6 +369,72 @@ describe("customer reviews and reports", () => {
       expect(isError, text).toBe(false);
     }
     expect(regions).toEqual(["Z1", "ZZ"]);
+  });
+});
+
+describe("download_report errors and the reports key", () => {
+  const appleError = (status: number, code: string, detail: string): typeof fetch =>
+    async () => new Response(JSON.stringify({ errors: [{ status: String(status), code, title: code, detail }] }), { status, headers: { "content-type": "application/json" } });
+  const useFetch = (h: Harness, impl: typeof fetch) => {
+    (h.asc as unknown as { fetchImpl: typeof fetch }).fetchImpl = impl;
+  };
+
+  it("explains a 403 by report role and suggests a reports key", async () => {
+    h = makeHarness();
+    useFetch(h, appleError(403, "FORBIDDEN_ERROR", "The API key in use does not allow this request"));
+    const { text, isError } = await h.call("download_report", { report_date: "2026-11-06", vendor_number: "80000000" });
+    expect(isError).toBe(true);
+    expect(text).toContain("Sales reports need a key with the Sales and Reports or Finance role");
+    expect(text).toContain("ASC_REPORTS_KEY_ID");
+    expect(text).not.toContain("App Manager covers");
+    const finance = await h.call("download_report", { kind: "finance", report_date: "2026-10", vendor_number: "80000000" });
+    expect(finance.text).toContain("Finance reports need a key with the Finance role");
+  });
+
+  it("says when each kind of report is published", async () => {
+    h = makeHarness();
+    useFetch(h, appleError(404, "NOT_FOUND", "There were no sales for the date specified."));
+    const cases: [Record<string, unknown>, string][] = [
+      [{ report_date: "2026-11-06" }, "Daily reports appear the next day"],
+      [{ report_date: "2026-11-08", frequency: "WEEKLY" }, "dated by the Sunday"],
+      [{ report_date: "2026-10", frequency: "MONTHLY" }, "after the month ends"],
+      [{ report_date: "2026-11-06", report_sub_type: "SUMMARY_TERRITORY" }, "only generated once there is matching activity"],
+      [{ kind: "finance", report_date: "2026-10" }, "fiscal months"],
+    ];
+    for (const [args, expected] of cases) {
+      const { text, isError } = await h.call("download_report", { vendor_number: "80000000", ...args });
+      expect(isError).toBe(true);
+      expect(text).toContain(expected);
+      expect(text).toContain("There were no sales for the date specified.");
+      expect(text).not.toContain("Hint:");
+    }
+  });
+
+  it("explains Apple's 'invalid vendor number' for subscription reports", async () => {
+    h = makeHarness();
+    useFetch(h, appleError(400, "PARAMETER_ERROR.INVALID", "Invalid vendor number specified. Try again."));
+    const sub = await h.call("download_report", { report_type: "SUBSCRIPTION", report_date: "2026-11-06", vendor_number: "80000000" });
+    expect(sub.text).toContain("no auto-renewable subscription activity");
+    const sales = await h.call("download_report", { report_date: "2026-11-06", vendor_number: "80000000" });
+    expect(sales.text).not.toContain("subscription activity");
+  });
+
+  it("uses the reports key when one is configured", async () => {
+    h = makeHarness();
+    useFetch(h, appleError(403, "FORBIDDEN_ERROR", "The main key must not be used for reports"));
+    const paths: string[] = [];
+    const reportsAsc = {
+      getBinary: async (path: string) => {
+        paths.push(path);
+        return gzipSync("Provider\tUnits\nAPPLE\t9");
+      },
+    } as unknown as AscClient;
+    const runtime: Runtime = { ...h.runtime, services: () => ({ ...h.runtime.services(), reportsAsc }) };
+    const result = await invoke(downloadReport, { kind: "sales", report_date: "2026-11-06", report_sub_type: "SUMMARY", frequency: "DAILY", rows: 0, vendor_number: "80000000" }, runtime);
+    const text = result.content.map((c) => (c.type === "text" ? c.text : "")).join("");
+    expect(result.isError, text).toBeFalsy();
+    expect(text).toContain("Total units: 9");
+    expect(paths).toEqual(["/v1/salesReports"]);
   });
 });
 
