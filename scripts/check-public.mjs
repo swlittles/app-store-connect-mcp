@@ -19,7 +19,7 @@ const problems = [];
 const KEY_FILE = /\.(p8|pem|p12|pfx|key|cer|mobileprovision)$|(^|\/)\.env(\.|$)/i;
 const PRIVATE_KEY = /-----BEGIN [A-Z ]*PRIVATE KEY-----/;
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
-const ALLOWED_EMAIL = /@(example\.(com|org|net)|users\.noreply\.github\.com|anthropic\.com)$/i;
+const ALLOWED_EMAIL = /(@(example\.(com|org|net)|users\.noreply\.github\.com|anthropic\.com)|^noreply@github\.com)$/i; // the last one is GitHub's own merge commits
 const HOME_PATH = /\/(Users|home)\/(?!you\b)[A-Za-z0-9._-]+/g;
 const denylist = existsSync(".public-denylist")
   ? readFileSync(".public-denylist", "utf8").split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"))
