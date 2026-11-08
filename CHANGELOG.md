@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
 
 - New `get_ratings` tool: star rating and number of ratings per country, overall and for the current version. It includes ratings without a written review, which `get_reviews` can't see. It uses Apple's public App Store lookup, which never receives the API token, so any key role works.
 - Optional reports key: set `ASC_REPORTS_KEY_ID` and `ASC_REPORTS_KEY_PATH` (or `ASC_REPORTS_KEY`) to a Finance or Sales and Reports key, and `download_report` uses it while every other tool keeps the main key. `ASC_REPORTS_ISSUER_ID` defaults to `ASC_ISSUER_ID`.
