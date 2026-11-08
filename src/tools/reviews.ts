@@ -83,7 +83,9 @@ export const downloadReport = defineTool({
   title: "Download a sales or finance report",
   description:
     "Downloads a sales or finance report (Apple returns gzipped TSV), optionally saves it, and returns the row count, columns, simple totals and the first rows. " +
-    "Needs the vendor number (App Store Connect > Payments and Financial Reports) as vendor_number or ASC_VENDOR_NUMBER, and a key with the Finance or Sales role.",
+    "Needs the vendor number (App Store Connect > Payments and Financial Reports) as vendor_number or ASC_VENDOR_NUMBER. " +
+    "Sales reports need a key with the Sales and Reports or Finance role, finance reports need Finance; App Manager keys can't download reports. " +
+    "Set ASC_REPORTS_KEY_ID and ASC_REPORTS_KEY_PATH to use a separate read-only key just for reports.",
   kind: "read",
   input: {
     kind: z.enum(["sales", "finance"]).default("sales"),
@@ -120,12 +122,14 @@ export const downloadReport = defineTool({
           "filter[reportDate]": args.report_date,
           "filter[version]": args.version,
         };
+    const client = ctx.reportsAsc ?? ctx.asc;
     let gz: Buffer;
     try {
-      gz = await ctx.asc.getBinary(finance ? "/v1/financeReports" : "/v1/salesReports", query, "application/a-gzip", ctx.signal);
+      gz = await client.getBinary(finance ? "/v1/financeReports" : "/v1/salesReports", query, "application/a-gzip", ctx.signal);
     } catch (error) {
-      if (error instanceof AscApiError && error.status === 404) {
-        throw new UserError(`No ${args.kind} report for ${args.report_date}. Apple publishes daily reports the next day (Pacific time), and nothing exists for days without activity.\n${error.message}`);
+      if (error instanceof AscApiError) {
+        const explained = explainReportError(error, args, Boolean(ctx.reportsAsc));
+        if (explained) throw new UserError(explained);
       }
       throw error;
     }
@@ -134,6 +138,67 @@ export const downloadReport = defineTool({
     return summarizeTsv(tsv, args.rows, args.save_to);
   },
 });
+
+interface ReportArgs {
+  kind: "sales" | "finance";
+  report_type?: string;
+  report_sub_type: string;
+  frequency: string;
+  report_date: string;
+}
+
+/** Apple's text for a report error without the generic hint line, which is about other tools. */
+function appleDetail(error: AscApiError): string {
+  return error.message
+    .split("\n")
+    .filter((line) => !line.startsWith("Hint:"))
+    .join("\n");
+}
+
+/** Turns Apple's report errors into what actually went wrong, or undefined to show the error as-is. */
+export function explainReportError(error: AscApiError, args: ReportArgs, usingReportsKey: boolean): string | undefined {
+  const finance = args.kind === "finance";
+  const type = args.report_type ?? (finance ? "FINANCIAL" : "SALES");
+  if (error.status === 403) {
+    const which = usingReportsKey ? "The reports key (ASC_REPORTS_KEY_ID)" : "This API key";
+    const need = finance ? "Finance reports need a key with the Finance role." : "Sales reports need a key with the Sales and Reports or Finance role.";
+    const fix = usingReportsKey
+      ? "Create a new key with the right role (roles can't be added to an existing key) and point ASC_REPORTS_KEY_ID and ASC_REPORTS_KEY_PATH at it."
+      : "App Manager, Developer and Marketing keys can't download reports. To keep this key for everything else, add a read-only reports key: set ASC_REPORTS_KEY_ID and ASC_REPORTS_KEY_PATH to a Finance key (it can read sales and finance reports, and the API has no way to move money).";
+    return `${which} can't download ${type} reports. ${need} ${fix}\n${appleDetail(error)}`;
+  }
+  if (error.status === 404) {
+    return `No ${type} report for ${args.report_date}. ${whenPublished(args, type)}\n${appleDetail(error)}`;
+  }
+  if (error.status === 400 && type.startsWith("SUBSCRI") && error.mentions("vendor number")) {
+    return (
+      `Apple rejected the vendor number for a ${type} report. If SALES reports work with the same vendor number, this most likely means ` +
+      "the account has no auto-renewable subscription activity for Apple to report yet (subscription reports start after the first purchase). " +
+      `Otherwise check the vendor number.\n${appleDetail(error)}`
+    );
+  }
+  return undefined;
+}
+
+function whenPublished(args: ReportArgs, type: string): string {
+  if (args.kind === "finance") {
+    return "Finance reports cover Apple's fiscal months (YYYY-MM) and appear early in the following fiscal month, and only for months with sales.";
+  }
+  const empty = "Nothing exists for a period without activity.";
+  if (type !== "SALES" || args.report_sub_type !== "SUMMARY") {
+    return `${type} ${args.report_sub_type} reports are only generated once there is matching activity, and some start a few days after an app's first sales. ${empty}`;
+  }
+  switch (args.frequency) {
+    case "WEEKLY":
+      return `Weekly reports cover Monday to Sunday, are dated by the Sunday, and appear the following Monday. ${empty}`;
+    case "MONTHLY":
+      return `Monthly reports (YYYY-MM) appear a few days after the month ends. ${empty}`;
+    case "YEARLY":
+      return `Yearly reports (YYYY) appear a few days after the year ends. ${empty}`;
+    default:
+      return `Daily reports appear the next day (by 5 am Pacific for the Americas). ${empty}`;
+  }
+}
 
 export function summarizeTsv(tsv: string, rows: number, savedTo?: string): string {
   const lines = tsv.split(/\r?\n/).filter((l) => l.trim());

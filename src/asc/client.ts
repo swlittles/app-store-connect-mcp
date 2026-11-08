@@ -355,7 +355,7 @@ function errorHint(status: number, errors: AscErrorItem[], rateLimit?: RateLimit
     return "An agreement is missing or expired. The Account Holder must accept it in App Store Connect under Business.";
   }
   if (status === 403) {
-    return "The API key's role doesn't allow this. App Manager covers everything this server does; Developer and Marketing roles can't manage testers or submissions. Never use an Admin key.";
+    return "The API key's role doesn't allow this. App Manager covers every tool except download_report, which needs a Sales and Reports or Finance key; Developer and Marketing roles can't manage testers or submissions. Never use an Admin key.";
   }
   if (status === 404) return "Not found. The ID may be wrong, deleted, or belong to a different app or team.";
   if (status === 409) return "App Store Connect refused the change in the resource's current state. Re-read the state, then decide whether a retry makes sense.";

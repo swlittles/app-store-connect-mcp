@@ -31,6 +31,10 @@ export function runtimeFromEnv(env: NodeJS.ProcessEnv = process.env): ServerRunt
     config = loadConfig(env);
     const tokens = new TokenProvider({ keyId: config.keyId, issuerId: config.issuerId, privateKey: config.privateKey });
     services = { config, asc: new AscClient({ baseUrl: config.baseUrl, tokens }) };
+    if (config.reports) {
+      const reportTokens = new TokenProvider({ keyId: config.reports.keyId, issuerId: config.reports.issuerId, privateKey: config.reports.privateKey });
+      services.reportsAsc = new AscClient({ baseUrl: config.baseUrl, tokens: reportTokens });
+    }
   } catch (error) {
     if (!(error instanceof ConfigError)) throw error;
     configError = error;

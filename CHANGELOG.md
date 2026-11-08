@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Optional reports key: set `ASC_REPORTS_KEY_ID` and `ASC_REPORTS_KEY_PATH` (or `ASC_REPORTS_KEY`) to a Finance or Sales and Reports key, and `download_report` uses it while every other tool keeps the main key. `ASC_REPORTS_ISSUER_ID` defaults to `ASC_ISSUER_ID`.
+- `download_report` errors say what actually went wrong:
+  - HTTP 403 names the role the report needs and how to add a reports key, instead of the general hint that App Manager covers everything (it can't download reports).
+  - "Not found" says when that kind of report is published (daily, weekly, monthly, yearly, finance, or a report generated only after matching activity), instead of always describing daily reports.
+  - Apple's "Invalid vendor number" for subscription reports is explained: it usually means the account has no subscription activity yet.
+- The general HTTP 403 hint no longer claims App Manager covers every tool.
+
 ## 0.4.0
 
 - Optional Apple Ads keyword research through the Apple Ads Platform API: `ads_status`, `keyword_popularity`, `search_term_trends` and `keyword_suggestions`.
