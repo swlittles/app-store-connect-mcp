@@ -78,6 +78,73 @@ export const replyToReview = defineTool({
 
 // ---------------------------------------------------------------------------------------------
 
+const LOOKUP_URL = "https://itunes.apple.com/lookup";
+
+interface LookupResult {
+  trackName?: string;
+  version?: string;
+  averageUserRating?: number;
+  userRatingCount?: number;
+  averageUserRatingForCurrentVersion?: number;
+  userRatingCountForCurrentVersion?: number;
+}
+
+export const getRatings = defineTool({
+  name: "get_ratings",
+  title: "Get star ratings",
+  description:
+    "Shows the App Store star rating and number of ratings per country, overall and for the current version, from Apple's public App Store lookup. " +
+    "Includes ratings without written reviews, which get_reviews can't see. Apple refreshes these figures about once a day.",
+  kind: "read",
+  input: {
+    app: appInput,
+    countries: z
+      .array(z.string().length(2))
+      .min(1)
+      .max(25)
+      .default(["us"])
+      .describe("Two-letter App Store country codes, e.g. us, gb, de. Default: us."),
+  },
+  async run(args, ctx) {
+    const ref = await resolveApp(ctx, args.app);
+    const lines: string[] = [];
+    let rated = 0;
+    for (const country of args.countries.map((c) => c.toLowerCase())) {
+      const url = `${LOOKUP_URL}?id=${encodeURIComponent(ref.id)}&country=${country}`;
+      let result: LookupResult | undefined;
+      try {
+        const response = await ctx.fetch(url, { signal: ctx.signal, headers: { accept: "application/json" } });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const body = (await response.json()) as { results?: LookupResult[] };
+        result = body.results?.[0];
+      } catch (error) {
+        lines.push(`- ${country.toUpperCase()}: couldn't reach the App Store lookup (${(error as Error).message}).`);
+        continue;
+      }
+      if (!result) {
+        lines.push(`- ${country.toUpperCase()}: not on the App Store in this country (or not live yet).`);
+        continue;
+      }
+      const count = result.userRatingCount ?? 0;
+      if (!count) {
+        lines.push(`- ${country.toUpperCase()}: no ratings yet.`);
+        continue;
+      }
+      rated++;
+      const current = result.userRatingCountForCurrentVersion
+        ? `; version ${result.version ?? "current"}: ${stars(result.averageUserRatingForCurrentVersion)} from ${plural(result.userRatingCountForCurrentVersion, "rating")}`
+        : "";
+      lines.push(`- ${country.toUpperCase()}: ${stars(result.averageUserRating)} from ${plural(count, "rating")}${current}`);
+    }
+    const note = rated ? "" : "\nRatings appear here a day or so after people rate the app.";
+    return `Star ratings for ${ref.name}:\n${lines.join("\n")}${note}`;
+  },
+});
+
+function stars(value: number | undefined): string {
+  return value === undefined ? "?" : `${(Math.round(value * 10) / 10).toFixed(1)}★`;
+}
+
 export const downloadReport = defineTool({
   name: "download_report",
   title: "Download a sales or finance report",

@@ -3,7 +3,7 @@ import { ascRequest, getAppStatus, listApps } from "./apps.js";
 import { distributeBuild, getBuild, listBuilds, uploadBuild } from "./builds.js";
 import type { AnyTool } from "./framework.js";
 import { getListing, setReviewDetails, setWhatsNew, updateAgeRating, updateListing } from "./listing.js";
-import { downloadReport, getReviews, replyToReview } from "./reviews.js";
+import { downloadReport, getRatings, getReviews, replyToReview } from "./reviews.js";
 import { deleteScreenshots, listScreenshots, reorderScreenshots, replaceScreenshot, uploadScreenshots } from "./screenshots.js";
 import { cancelReviewSubmission, prepareVersion, submitForReview } from "./submission.js";
 import { addFreeTrial, listSubscriptionsTool, removeIntroOffers } from "./subscriptions.js";
@@ -22,6 +22,7 @@ export const TOOLS: readonly AnyTool[] = [
   listScreenshots,
   listSubscriptionsTool,
   getReviews,
+  getRatings,
   downloadReport,
   // TestFlight
   uploadBuild,

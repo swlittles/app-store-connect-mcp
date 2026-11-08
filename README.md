@@ -153,7 +153,7 @@ Both take tool names and group names, separated by commas or spaces. Turned-off 
 
 | Group | Tools |
 | --- | --- |
-| `read` | Every read-only tool: `list_apps`, `get_app_status`, `list_builds`, `get_build`, `list_beta_groups`, `list_testers`, `get_listing`, `list_screenshots`, `list_subscriptions`, `get_reviews`, `download_report` |
+| `read` | Every read-only tool: `list_apps`, `get_app_status`, `list_builds`, `get_build`, `list_beta_groups`, `list_testers`, `get_listing`, `list_screenshots`, `list_subscriptions`, `get_reviews`, `get_ratings`, `download_report` |
 | `testflight` | `upload_build`, `distribute_build`, `create_beta_group`, `invite_testers`, `remove_testers` |
 | `listing` | `update_listing`, `set_whats_new`, `update_age_rating` |
 | `screenshots` | `upload_screenshots`, `replace_screenshot`, `reorder_screenshots`, `delete_screenshots` |
@@ -196,6 +196,7 @@ Tools take an `app` argument, which can be an app ID, a bundle ID or a name. Res
 | `list_screenshots` | Screenshot sets in display order, with positions, sizes, states and IDs. |
 | `list_subscriptions` | Subscription groups, subscriptions, price in a territory, introductory offers summarized across territories, and in-app purchases. |
 | `get_reviews` | Customer reviews with your replies. |
+| `get_ratings` | Star rating and number of ratings per country, including ratings without a written review. Uses Apple's public App Store lookup, so no extra key role is needed. |
 | `download_report` | Sales or finance report: unzipped, totaled, optionally saved as TSV. |
 
 **Workflows** (these change things, so they need `ASC_WRITE=1`; any of them can be called with `dry_run: true` to see the plan):
